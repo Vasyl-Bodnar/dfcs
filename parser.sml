@@ -15,98 +15,116 @@ structure Result = struct
 end
 
 structure Parser = struct
-  type 'a parser = string * int -> ('a * string * int, string * string * int) result
+  type ctx = {str: string, idx: int, htinfix: int HashArray.hash}
+  type 'a parser = ctx -> ('a * ctx, string * ctx) result
 
-  fun mapRes f (Ok (ok, str, idx)) = Ok (f ok, str, idx)
-    | mapRes f (Err (err, str, idx)) = Err (err, str, idx)
+  fun mapRes f (Ok (ok, ctx)) = Ok (f ok, ctx)
+    | mapRes f (Err (err, ctx)) = Err (err, ctx)
 
-  fun map f p (str, idx) = mapRes f (p (str, idx))
-  fun mapFull f p (str, idx) = Result.map f (p (str, idx))
+  fun map f p ctx = mapRes f (p ctx)
+  fun mapFull f p ctx = Result.map f (p ctx)
 
-  fun bindFull f p (str, idx) = Result.bind f (p (str, idx))
+  fun bindFull f p ctx = Result.bind f (p ctx)
 
   fun isOk (Ok _) = true
     | isOk (Err _) = false
 
-  fun parse (p : 'a parser) str = p (str, 0)
+  fun parse (p : 'a parser) str =
+      let val ht = HashArray.hash 20
+      in
+          app (fn (name, fix) => HashArray.update (ht, name, fix))
+              [("*", 7), ("/", 7), ("div", 7), ("mod",7),
+               ("+", 6), ("-", 6), ("^", 6), ("::", ~5), ("@", ~5),
+               ("=", 4), ("<>", 4), (">", 4), ("<", 4), (">=", 4), ("<=", 4),
+               (":=", 3), ("o", 3), ("before", 0)];
+          p {str=str, idx=0, htinfix=ht}
+      end
+
 end
 
-fun ch c (str, idx) =
+fun ch c ({str, idx, htinfix} : Parser.ctx) =
     if idx < (String.size str) andalso String.sub (str, idx) = c
-    then Ok (c, str, idx+1)
-    else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", str, idx)
+    then Ok (c, {str=str, idx=idx+1, htinfix=htinfix})
+    else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", {str=str, idx=idx, htinfix=htinfix})
 
-fun str s (str, idx) =
+fun str s ({str, idx, htinfix} : Parser.ctx) =
     if String.size str - idx < String.size s then
-      Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), str, idx)
+      Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), {str=str, idx=idx, htinfix=htinfix})
     else let
       val subs = Substring.extract (s, 0, NONE)
       val substr = Substring.substring (str, idx, Substring.size subs)
     in
       if Substring.compare (substr, subs) = EQUAL
-      then Ok (substr, str, idx + (Substring.size substr))
-      else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", str, idx)
+      then Ok (substr, {str=str, idx=idx + Substring.size substr, htinfix=htinfix})
+      else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", {str=str, idx=idx, htinfix=htinfix})
     end
 
-fun notChs cs (str, idx) =
+fun notChs cs ({str, idx, htinfix} : Parser.ctx) =
     if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
-    then Ok (String.sub (str, idx), str, idx+1)
-    else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (map String.str cs)) ^ "]\n", str, idx)
+    then Ok (String.sub (str, idx), {str=str, idx=idx+1, htinfix=htinfix})
+    else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (map String.str cs)) ^ "]\n", {str=str, idx=idx, htinfix=htinfix})
 
-fun chain2 (p, q) = Parser.bindFull (fn (rp, str, idx) => Parser.map (fn rq => (rp, rq)) q (str, idx)) p
-fun chain3 (p, q, r) = Parser.bindFull (fn (rp, str, idx) => Parser.bindFull (fn (rq, str, idx) => Parser.map (fn rr => (rp, rq, rr)) r (str, idx)) q (str, idx)) p
+fun chain2 (p, q) = Parser.bindFull (fn (rp, ctx) => Parser.map (fn rq => (rp, rq)) q ctx) p
+fun chain3 (p, q, r) = Parser.bindFull (fn (rp, ctx) => Parser.bindFull (fn (rq, ctx) => Parser.map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
 
-fun ignoreLeft p q = Parser.bindFull (fn (_, str, idx) => q (str, idx)) p
-fun ignoreRight p q = Parser.bindFull (fn (res, str, idx) => (Parser.map (fn _ => res) q) (str, idx)) p
+fun ignoreLeft p q = Parser.bindFull (fn (_, ctx) => q ctx) p
+fun ignoreRight p q = Parser.bindFull (fn (res, ctx) => (Parser.map (fn _ => res) q) ctx) p
 fun between lp q rp = Parser.map (fn (p, q, r) => q) (chain3 (lp, q, rp))
 
-fun check f p (str, idx) =
-    case (p (str, idx)) of
-        Ok (ok, str, idx) => if f ok
-                             then Ok (ok, str, idx)
-                             else Err ("ERROR in check", str, idx)
+fun check f p ctx =
+    case (p ctx) of
+        Ok (ok, ctx) => if f ok
+                        then Ok (ok, ctx)
+                        else Err ("ERROR in check", ctx)
        | Err err => Err err
 
-fun chain ps (str, idx) = Parser.mapRes rev
+fun checkFull f p ctx =
+    case (p ctx) of
+        Ok (ok, ctx) => if f (ok, ctx)
+                        then Ok (ok, ctx)
+                        else Err ("ERROR in check", ctx)
+       | Err err => Err err
+
+fun chain ps ctx = Parser.mapRes rev
         (foldl (fn (p, acc) =>
-                      Result.bind (fn (oks, str, idx) =>
-                                     Result.map (fn (ok, str, idx) =>
-                                                    (ok :: oks, str, idx))
-                                                (p (str, idx)))
+                      Result.bind (fn (oks, ctx) =>
+                                     Result.map (fn (ok, ctx) =>
+                                                    (ok :: oks, ctx))
+                                                (p ctx))
                                   acc)
-               (Ok ([], str, idx)) ps)
+               (Ok ([], ctx)) ps)
 
-fun many p (str, idx) =
-    case p (str, idx) of
-        Ok (ok, str, idx) => (case many p (str, idx) of
-                                 Ok (oks, str, idx) => Ok (ok :: oks, str, idx)
+fun many p ctx =
+    case p ctx of
+        Ok (ok, ctx) => (case many p ctx of
+                                 Ok (oks, ctx) => Ok (ok :: oks, ctx)
                                | Err err => Err err)
-      | Err (err, str, idx) => Ok ([], str, idx)
+      | Err (err, ctx) => Ok ([], ctx)
 
-fun some p (str, idx) =
-    case p (str, idx) of
-        Ok (ok, str, idx) => let val resNext = many p (str, idx)
+fun some p ctx =
+    case p ctx of
+        Ok (ok, ctx) => let val resNext = many p ctx
                              in case resNext of
-                                    Ok (oks, str, idx) => Ok (ok :: oks, str, idx)
-                                  | Err (err, _, _) => Ok ([ok], str, idx)
+                                    Ok (oks, ctx) => Ok (ok :: oks, ctx)
+                                  | Err (err, _) => Ok ([ok], ctx)
                              end
       | Err err => Err err
 
-fun choose [] (str, idx) = Err (("ERROR in choose with no correct choice"), str, idx)
-  | choose (p::ps) (str, idx) =
-    let val res = p (str, idx)
+fun choose [] ctx = Err (("ERROR in choose with no correct choice"), ctx)
+  | choose (p::ps) ctx =
+    let val res = p ctx
     in
       if Parser.isOk res
       then res
-      else choose ps (str, idx)
+      else choose ps ctx
     end
 
-fun opt default p (str, idx) =
-    let val res = p (str, idx)
+fun opt default p ctx =
+    let val res = p ctx
     in
       if Parser.isOk res
       then res
-      else Ok (default, str, idx)
+      else Ok (default, ctx)
     end
 
 datatype con = ConInt of int
@@ -147,11 +165,11 @@ val digit = (choose (map ch [#"0", #"1", #"2", #"3", #"4", #"5", #"6", #"7", #"8
 val conHexLetter = Parser.map (fn dig => (Char.ord (Char.toLower dig)) - (Char.ord #"a") + 10) (choose (List.map ch [#"a", #"b", #"c", #"d", #"e", #"f", #"A", #"B", #"C", #"D", #"E", #"F"]))
 val conDigit = Parser.map (fn dig => (Char.ord dig) - (Char.ord #"0")) digit
 val conNonZeroDigit = Parser.map (fn dig => (Char.ord dig) - (Char.ord #"0")) (choose (map ch [#"1", #"2", #"3", #"4", #"5", #"6", #"7", #"8", #"9"]))
-val conHex = Parser.map ConInt (ignoreLeft (str "0x") (Parser.map (foldl (fn (num, acc) => acc * 16 + num) 0) (some (choose [conDigit, conHexLetter]))))
-val conNum = Parser.map ConInt (Parser.map (foldl (fn (num, acc) => acc * 10 + num) 0) (some conDigit))
+val conHex = ignoreLeft (str "0x") (Parser.map (foldl (fn (num, acc) => acc * 16 + num) 0) (some (choose [conDigit, conHexLetter])))
+val conNum = Parser.map (foldl (fn (num, acc) => acc * 10 + num) 0) (some conDigit)
 val conNonZeroNum = Parser.map (foldl (fn (num, acc) => acc * 10 + num) 0)
                                (Parser.map List.concat (chain [Parser.map (fn x => [x]) conNonZeroDigit, many conDigit]))
-val conInt = Parser.map (fn (neg, ConInt num) => ConInt (if neg then ~num else num))
+val conInt = Parser.map (fn (neg, num) => ConInt (if neg then ~num else num))
                         (chain2 (opt false (Parser.map (fn _ => true) (ch #"~")), choose [conHex, conNum]))
 
 val conAscii =
@@ -179,7 +197,7 @@ val reserved = ["abstype", "and", "andalso", "as", "case", "datatype", "do", "el
                 "exception", "fn", "fun", "handle", "if", "in", "infix", "infixr", "let",
                 "local", "nonfix", "of", "op", "open", "orelse", "raise", "rec", "then",
                 "type", "val", "with", "withtype", "while", "(", ")", "[", "]", "{",
-                "}", ",", ":", ";", "...", "_", "|", "=", "=>", "->", "#"]
+                "}", ",", ":", ";", "...", "_", "|", "=>", "->", "#"]
 
 val coreCon = choose [conInt, conChar, conString]
 val coreId = check (fn s => not (List.exists (fn r => (String.compare (s, r)) = EQUAL) reserved))
@@ -194,18 +212,18 @@ val coreVar = ignoreLeft (ch #"'") (Parser.map (fn ls => String.implode (List.co
 val coreLongId = Parser.map List.concat (chain [Parser.map (fn x => [x]) coreId, many (ignoreLeft (ch #".") coreId)])
 val coreLab = choose [coreId, Parser.map Int.toString conNonZeroNum]
 
-fun coreMatch (strn, idx) =
+fun coreMatch ctx =
     Parser.map List.concat
                (chain [chain [chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)],
-                       many (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)))]) (strn, idx)
+                       many (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)))]) ctx
 
-and corePat (strn, idx) = Parser.map PatCon coreCon (strn, idx)
+and corePat ctx = Parser.map PatCon coreCon ctx
 
-and coreTyp (strn, idx) = Parser.map TypVar coreVar (strn, idx)
+and coreTyp ctx = Parser.map TypVar coreVar ctx
 
-and coreDecl (strn, idx) = Parser.map DeclPlaceholder (notChs [#"i"]) (strn, idx)
+and coreDecl ctx = Parser.map DeclPlaceholder (notChs [#"i"]) ctx
 
-and coreNonRecExp (strn, idx) =
+and coreNonRecExp ctx =
     choose [Parser.map ExpCon coreCon,
             Parser.map ExpValId
                        (chain2 (opt false (Parser.map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
@@ -243,12 +261,14 @@ and coreNonRecExp (strn, idx) =
             Parser.map ExpIter (ignoreLeft (ignoreRight (str "while") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "do") someSpace), coreExp))),
             Parser.map ExpMatch (ignoreLeft (ignoreRight (str "case") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "of") someSpace), coreMatch))),
             Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch)
-           ] (strn, idx)
+           ] ctx
+
+and coreInfixId ctx = checkFull (fn (s, {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId ctx
 
 (* TODO: Left-recursion *)
-and coreExp (strn, idx) =
+and coreExp ctx =
     choose [Parser.map ExpInfixApp
-                       (chain3 (ignoreRight coreNonRecExp someSpace, ignoreRight coreId someSpace, coreExp)),
+                       (chain3 (ignoreRight coreNonRecExp someSpace, ignoreRight coreInfixId someSpace, coreExp)),
             Parser.map ExpApp
                        (chain2 (ignoreRight coreNonRecExp someSpace, coreExp)),
             Parser.map ExpTypeAnnote
@@ -260,4 +280,4 @@ and coreExp (strn, idx) =
             Parser.map ExpDisj
                        (chain2 (ignoreRight coreNonRecExp (between someSpace (str "orelse") someSpace), coreExp)),
             coreNonRecExp
-           ] (strn, idx)
+           ] ctx

@@ -69,7 +69,7 @@ fun chain3 (p, q, r) = Parser.bindFull (fn (rp, ctx) => Parser.bindFull (fn (rq,
 
 fun ignoreLeft p q = Parser.bindFull (fn (_, ctx) => q ctx) p
 fun ignoreRight p q = Parser.bindFull (fn (res, ctx) => (Parser.map (fn _ => res) q) ctx) p
-fun between lp q rp = Parser.map (fn (p, q, r) => q) (chain3 (lp, q, rp))
+fun between lp q rp = ignoreRight (ignoreLeft lp q) rp
 
 fun check f p ctx =
     case (p ctx) of
@@ -98,8 +98,8 @@ fun many p ctx =
     case p ctx of
         Ok (ok, ctx) => (case many p ctx of
                                  Ok (oks, ctx) => Ok (ok :: oks, ctx)
-                               | Err err => Err err)
-      | Err (err, ctx) => Ok ([], ctx)
+                               | Err (err, _) => Err (err, ctx))
+      | Err _ => Ok ([], ctx)
 
 fun some p ctx =
     case p ctx of
@@ -108,7 +108,7 @@ fun some p ctx =
                                     Ok (oks, ctx) => Ok (ok :: oks, ctx)
                                   | Err (err, _) => Ok ([ok], ctx)
                              end
-      | Err err => Err err
+      | Err (err, _) => Err (err, ctx)
 
 fun choose [] ctx = Err (("ERROR in choose with no correct choice"), ctx)
   | choose (p::ps) ctx =
@@ -118,6 +118,17 @@ fun choose [] ctx = Err (("ERROR in choose with no correct choice"), ctx)
       then res
       else choose ps ctx
     end
+
+fun chooseLong' [] ctx acc = acc
+  | chooseLong' (p::ps) ctx (acc as (Ok ok, idx)) =
+    (case p ctx of
+        res as (Ok (ok, {idx=nidx, ...} : Parser.ctx)) => if nidx > idx then chooseLong' ps ctx (res, nidx) else chooseLong' ps ctx acc
+      | Err _ => chooseLong' ps ctx acc)
+  | chooseLong' (p::ps) ctx (acc as (Err _, _)) =
+    (case p ctx of
+        res as (Ok (ok, {idx=idx, ...} : Parser.ctx)) => chooseLong' ps ctx (res, idx)
+      | Err _ => chooseLong' ps ctx acc)
+fun chooseLong ps ctx = #1 (chooseLong' ps ctx (Err (("ERROR in choose with no correct choice"), ctx), 0))
 
 fun opt default p ctx =
     let val res = p ctx
@@ -140,7 +151,7 @@ and decl = DeclVal of string list * (bool * pat * exp) list
          | DeclPlaceholder of char
 and      exp = ExpCon of con
              | ExpValId of bool * string list
-             | ExpApp of exp * exp
+             | ExpApp of exp * exp list
              | ExpInfixApp of exp * string * exp
              | ExpTuple of exp list
              | ExpRecord of (string * exp) list
@@ -148,11 +159,11 @@ and      exp = ExpCon of con
              | ExpList of exp list
              | ExpSeq of exp list
              | ExpLocalDecl of decl * exp list
+             | ExpConj of exp * exp
+             | ExpDisj of exp * exp
              | ExpTypeAnnote of exp * typ
              | ExpExceptionRaise of exp
              | ExpExceptionHandle of exp * (pat * exp) list
-             | ExpConj of exp * exp
-             | ExpDisj of exp * exp
              | ExpCond of exp * exp * exp
              | ExpIter of exp * exp
              | ExpMatch of exp * (pat * exp) list
@@ -205,6 +216,7 @@ val coreId = check (fn s => not (List.exists (fn r => (String.compare (s, r)) = 
                                        (chain [Parser.map (fn x => [x]) letter,
                                                many (choose [letter, digit, ch #"_", ch #"'"])]),
                             Parser.map String.implode (some symbolic)])
+val coreInfixId = checkFull (fn (s, {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId
 (* TODO: A bit more special than just one/two primes at the start *)
 val coreVar = ignoreLeft (ch #"'") (Parser.map (fn ls => String.implode (List.concat ls))
                                 (chain [Parser.map (fn x => [x]) letter,
@@ -223,7 +235,7 @@ and coreTyp ctx = Parser.map TypVar coreVar ctx
 
 and coreDecl ctx = Parser.map DeclPlaceholder (notChs [#"i"]) ctx
 
-and coreNonRecExp ctx =
+and coreATExp ctx =
     choose [Parser.map ExpCon coreCon,
             Parser.map ExpValId
                        (chain2 (opt false (Parser.map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
@@ -255,29 +267,30 @@ and coreNonRecExp ctx =
                                (between (between space (str "in") space)
                                         (Parser.map List.concat (chain [chain [coreExp],
                                                                         many (ignoreLeft (spacedCh #";") coreExp)]))
-                                        (ignoreLeft space (str "end"))))),
+                                        (ignoreLeft space (str "end")))))]
+           ctx
+
+(* TODO: Infix correction required *)
+and coreAppExp ctx =
+    choose [Parser.map ExpApp
+                       (chain2 (coreATExp, some (ignoreLeft someSpace coreATExp))),
+            coreATExp]
+           ctx
+
+(* TODO: Further work required *)
+and coreExp ctx =
+    choose [Parser.map ExpTypeAnnote
+                       (chain2 (ignoreRight coreAppExp (spacedCh #":"), coreTyp)),
+            Parser.map ExpConj
+                       (chain2 (coreAppExp, ignoreLeft (between someSpace (str "andalso") someSpace) coreExp)),
+            Parser.map ExpDisj
+                       (chain2 (coreAppExp, ignoreLeft (between someSpace (str "orelse") someSpace) coreExp)),
+            Parser.map ExpExceptionHandle
+                       (chain2 (ignoreRight coreAppExp (between someSpace (str "handle") someSpace), coreMatch)),
             Parser.map ExpExceptionRaise (ignoreLeft (ignoreRight (str "raise") someSpace) coreExp),
             Parser.map ExpCond (ignoreLeft (ignoreRight (str "if") someSpace) (chain3 (ignoreRight coreExp (between someSpace (str "then") someSpace), ignoreRight coreExp (between someSpace (str "else") someSpace), coreExp))),
             Parser.map ExpIter (ignoreLeft (ignoreRight (str "while") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "do") someSpace), coreExp))),
             Parser.map ExpMatch (ignoreLeft (ignoreRight (str "case") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "of") someSpace), coreMatch))),
-            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch)
-           ] ctx
-
-and coreInfixId ctx = checkFull (fn (s, {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId ctx
-
-(* TODO: Left-recursion *)
-and coreExp ctx =
-    choose [Parser.map ExpInfixApp
-                       (chain3 (ignoreRight coreNonRecExp someSpace, ignoreRight coreInfixId someSpace, coreExp)),
-            Parser.map ExpApp
-                       (chain2 (ignoreRight coreNonRecExp someSpace, coreExp)),
-            Parser.map ExpTypeAnnote
-                       (chain2 (ignoreRight coreNonRecExp (spacedCh #":"), coreTyp)),
-            Parser.map ExpExceptionHandle
-                       (chain2 (ignoreRight coreNonRecExp (between someSpace (str "handle") someSpace), coreMatch)),
-            Parser.map ExpConj
-                       (chain2 (ignoreRight coreNonRecExp (between someSpace (str "andalso") someSpace), coreExp)),
-            Parser.map ExpDisj
-                       (chain2 (ignoreRight coreNonRecExp (between someSpace (str "orelse") someSpace), coreExp)),
-            coreNonRecExp
-           ] ctx
+            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch),
+            coreAppExp]
+           ctx

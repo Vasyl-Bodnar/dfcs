@@ -234,6 +234,12 @@ val coreVar = ignoreLeft (ch #"'") (Parser.map (fn ls => String.implode (List.co
 val coreLongId = Parser.map List.concat (chain [Parser.map (fn x => [x]) coreId, many (ignoreLeft (ch #".") coreId)])
 val coreLab = choose [coreId, Parser.map Int.toString conNonZeroNum]
 
+fun listBetween left core repeat sep right =
+    between (ignoreRight left space)
+            (Parser.map List.concat (chain [chain [core],
+                                            repeat (ignoreLeft (spacedCh sep) core)]))
+            (ignoreLeft space right)
+
 fun coreMatch ctx =
     Parser.map List.concat
                (chain [chain [chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)],
@@ -243,7 +249,7 @@ and corePat ctx = Parser.map PatCon coreCon ctx
 
 and coreTyp ctx = Parser.map TypVar coreVar ctx
 
-and coreDecl ctx = Parser.map DeclPlaceholder (notChs [#"i"]) ctx
+and coreDecl ctx = Parser.map DeclPlaceholder (ignoreRight (notChs [#"i"]) someSpace) ctx
 
 and coreATExp ctx =
     Parser.memoize "coreATExp"
@@ -252,33 +258,16 @@ and coreATExp ctx =
                        (chain2 (opt false (Parser.map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
             between (ch #"(") coreExp (ch #")"),
             Parser.map (fn _ => ExpTuple []) (between (ch #"(") space (ch #")")),
-            Parser.map ExpTuple
-                       (between (ignoreRight (ch #"(") space)
-                                (Parser.map List.concat (chain [chain [coreExp],
-                                                                some (ignoreLeft (spacedCh #",") coreExp)]))
-                                (ignoreLeft space (ch #")"))),
-            Parser.map ExpRecord
-                       (between (ignoreRight (ch #"{") space)
-                                (Parser.map List.concat (chain [opt [] (chain [chain2 (ignoreRight coreLab (spacedCh #"="), coreExp)]),
-                                                                many (ignoreLeft (spacedCh #",") (chain2 (ignoreRight coreLab (spacedCh #"="), coreExp)))]))
-                                (ignoreLeft space (ch #"}"))),
+            Parser.map (fn _ => ExpRecord []) (between (ch #"{") space (ch #"}")),
+            Parser.map (fn _ => ExpList []) (between (ch #"[") space (ch #"]")),
+            Parser.map ExpTuple (listBetween (ch #"(") coreExp some #"," (ch #")")),
+            Parser.map ExpRecord (listBetween (ch #"{") (chain2 (ignoreRight coreLab (spacedCh #"="), coreExp)) many #"," (ch #"}")),
             Parser.map ExpRecordSelect (ignoreLeft (spacedCh #"#") coreLab),
-            Parser.map ExpList
-                       (between (ignoreRight (ch #"[") space)
-                                (Parser.map List.concat (chain [opt [] (chain [coreExp]),
-                                                                many (ignoreLeft (spacedCh #",") coreExp)]))
-                                (ignoreLeft space (ch #"]"))),
-            Parser.map ExpSeq
-                       (between (ignoreRight (ch #"(") space)
-                                (Parser.map List.concat (chain [chain [coreExp],
-                                                                some (ignoreLeft (spacedCh #";") coreExp)]))
-                                (ignoreLeft space (ch #")"))),
+            Parser.map ExpList (listBetween (ch #"[") coreExp many #"," (ch #"]")),
+            Parser.map ExpSeq (listBetween (ch #"(") coreExp some #";" (ch #")")),
             Parser.map ExpLocalDecl
                        (chain2 (ignoreLeft (ignoreRight (str "let") space) coreDecl,
-                               (between (between space (str "in") space)
-                                        (Parser.map List.concat (chain [chain [coreExp],
-                                                                        many (ignoreLeft (spacedCh #";") coreExp)]))
-                                        (ignoreLeft space (str "end")))))])
+                                (listBetween (str "in") coreExp many #";" (str "end"))))])
            ctx
 
 (* TODO: Infix and App correction required *)

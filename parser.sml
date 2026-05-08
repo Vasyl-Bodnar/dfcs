@@ -39,7 +39,6 @@ structure Parser = struct
                (":=", 3), ("o", 3), ("before", 0)];
           p {str=str, idx=0, htinfix=ht}
       end
-
 end
 
 fun ch c ({str, idx, htinfix} : Parser.ctx) =
@@ -151,7 +150,7 @@ and decl = DeclVal of string list * (bool * pat * exp) list
          | DeclPlaceholder of char
 and      exp = ExpCon of con
              | ExpValId of bool * string list
-             | ExpApp of exp * exp list
+             | ExpApp of exp list
              | ExpInfixApp of exp * string * exp
              | ExpTuple of exp list
              | ExpRecord of (string * exp) list
@@ -270,27 +269,33 @@ and coreATExp ctx =
                                         (ignoreLeft space (str "end")))))]
            ctx
 
-(* TODO: Infix correction required *)
+(* TODO: Infix and App correction required *)
 and coreAppExp ctx =
     choose [Parser.map ExpApp
-                       (chain2 (coreATExp, some (ignoreLeft someSpace coreATExp))),
-            coreATExp]
-           ctx
+                       (Parser.map List.concat (chain [chain [coreATExp], some (ignoreLeft space coreATExp)])),
+            coreATExp] ctx
 
-(* TODO: Further work required *)
-and coreExp ctx =
+and coreTypeAnnoteExp ctx =
     choose [Parser.map ExpTypeAnnote
                        (chain2 (ignoreRight coreAppExp (spacedCh #":"), coreTyp)),
-            Parser.map ExpConj
-                       (chain2 (coreAppExp, ignoreLeft (between someSpace (str "andalso") someSpace) coreExp)),
-            Parser.map ExpDisj
-                       (chain2 (coreAppExp, ignoreLeft (between someSpace (str "orelse") someSpace) coreExp)),
-            Parser.map ExpExceptionHandle
-                       (chain2 (ignoreRight coreAppExp (between someSpace (str "handle") someSpace), coreMatch)),
+            coreAppExp] ctx
+
+and coreConj ctx =
+    choose [Parser.map ExpConj
+                       (chain2 (coreTypeAnnoteExp, ignoreLeft (between someSpace (str "andalso") someSpace) coreExp)),
+            coreTypeAnnoteExp] ctx
+
+and coreDisj ctx =
+    choose [Parser.map ExpDisj
+                       (chain2 (coreConj, ignoreLeft (between someSpace (str "orelse") someSpace) coreExp)),
+            coreConj] ctx
+
+and coreExp ctx =
+    choose [Parser.map ExpExceptionHandle
+                       (chain2 (ignoreRight coreDisj (between someSpace (str "handle") someSpace), coreMatch)),
+            coreDisj,
             Parser.map ExpExceptionRaise (ignoreLeft (ignoreRight (str "raise") someSpace) coreExp),
             Parser.map ExpCond (ignoreLeft (ignoreRight (str "if") someSpace) (chain3 (ignoreRight coreExp (between someSpace (str "then") someSpace), ignoreRight coreExp (between someSpace (str "else") someSpace), coreExp))),
             Parser.map ExpIter (ignoreLeft (ignoreRight (str "while") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "do") someSpace), coreExp))),
             Parser.map ExpMatch (ignoreLeft (ignoreRight (str "case") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "of") someSpace), coreMatch))),
-            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch),
-            coreAppExp]
-           ctx
+            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch)] ctx

@@ -15,8 +15,8 @@ structure Result = struct
 end
 
 structure Parser = struct
-  type ctx = {str: string, idx: int, htinfix: int HashArray.hash}
-  type 'a parser = ctx -> ('a * ctx, string * ctx) result
+  datatype 'a ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, htcell: ('a * 'a ctx, string * 'a ctx) result HashArray.hash}
+  type 'a parser = 'a ctx -> ('a * 'a ctx, string * 'a ctx) result
 
   fun mapRes f (Ok (ok, ctx)) = Ok (f ok, ctx)
     | mapRes f (Err (err, ctx)) = Err (err, ctx)
@@ -29,39 +29,50 @@ structure Parser = struct
   fun isOk (Ok _) = true
     | isOk (Err _) = false
 
-  fun parse (p : 'a parser) str =
-      let val ht = HashArray.hash 20
-      in
+  (* NOTE: `uniq` should not end with a number that can be used as an input index *)
+  fun memoize uniq (p : 'a parser) (ctx as Ctx {idx, htcell, ...}) =
+      let val uniqid = uniq ^ (Int.toString idx)
+      in case HashArray.sub (htcell, uniqid) of
+            SOME x => x
+          | NONE => let val res = p ctx in
+                        HashArray.update (htcell, uniqid, res);
+                        res
+                    end
+      end
+
+  fun parse (p : 'a parser) (str : string) =
+      let val ht = HashArray.hash 20 in
           app (fn (name, fix) => HashArray.update (ht, name, fix))
               [("*", 7), ("/", 7), ("div", 7), ("mod",7),
                ("+", 6), ("-", 6), ("^", 6), ("::", ~5), ("@", ~5),
                ("=", 4), ("<>", 4), (">", 4), ("<", 4), (">=", 4), ("<=", 4),
                (":=", 3), ("o", 3), ("before", 0)];
-          p {str=str, idx=0, htinfix=ht}
+          (* NOTE: String.size might be too much in some cases, better heuristic appreciated *)
+          p (Ctx {str=str, idx=0, htinfix=ht, htcell=HashArray.hash (String.size str)})
       end
 end
 
-fun ch c ({str, idx, htinfix} : Parser.ctx) =
+fun ch c (Parser.Ctx {str, idx, htinfix, htcell}) =
     if idx < (String.size str) andalso String.sub (str, idx) = c
-    then Ok (c, {str=str, idx=idx+1, htinfix=htinfix})
-    else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", {str=str, idx=idx, htinfix=htinfix})
+    then Ok (c, Parser.Ctx {str=str, idx=idx+1, htinfix=htinfix, htcell=htcell})
+    else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", Parser.Ctx {str=str, idx=idx, htinfix=htinfix, htcell=htcell})
 
-fun str s ({str, idx, htinfix} : Parser.ctx) =
+fun str s (Parser.Ctx {str, idx, htinfix, htcell}) =
     if String.size str - idx < String.size s then
-      Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), {str=str, idx=idx, htinfix=htinfix})
+      Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), Parser.Ctx {str=str, idx=idx, htinfix=htinfix, htcell=htcell})
     else let
       val subs = Substring.extract (s, 0, NONE)
       val substr = Substring.substring (str, idx, Substring.size subs)
     in
       if Substring.compare (substr, subs) = EQUAL
-      then Ok (substr, {str=str, idx=idx + Substring.size substr, htinfix=htinfix})
-      else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", {str=str, idx=idx, htinfix=htinfix})
+      then Ok (substr, Parser.Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htcell=htcell})
+      else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", Parser.Ctx {str=str, idx=idx, htinfix=htinfix, htcell=htcell})
     end
 
-fun notChs cs ({str, idx, htinfix} : Parser.ctx) =
+fun notChs cs (Parser.Ctx {str, idx, htinfix, htcell}) =
     if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
-    then Ok (String.sub (str, idx), {str=str, idx=idx+1, htinfix=htinfix})
-    else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (map String.str cs)) ^ "]\n", {str=str, idx=idx, htinfix=htinfix})
+    then Ok (String.sub (str, idx), Parser.Ctx {str=str, idx=idx+1, htinfix=htinfix, htcell=htcell})
+    else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (map String.str cs)) ^ "]\n", Parser.Ctx {str=str, idx=idx, htinfix=htinfix, htcell=htcell})
 
 fun chain2 (p, q) = Parser.bindFull (fn (rp, ctx) => Parser.map (fn rq => (rp, rq)) q ctx) p
 fun chain3 (p, q, r) = Parser.bindFull (fn (rp, ctx) => Parser.bindFull (fn (rq, ctx) => Parser.map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
@@ -121,11 +132,11 @@ fun choose [] ctx = Err (("ERROR in choose with no correct choice"), ctx)
 fun chooseLong' [] ctx acc = acc
   | chooseLong' (p::ps) ctx (acc as (Ok ok, idx)) =
     (case p ctx of
-        res as (Ok (ok, {idx=nidx, ...} : Parser.ctx)) => if nidx > idx then chooseLong' ps ctx (res, nidx) else chooseLong' ps ctx acc
+        res as (Ok (ok, Parser.Ctx {idx=nidx, ...})) => if nidx > idx then chooseLong' ps ctx (res, nidx) else chooseLong' ps ctx acc
       | Err _ => chooseLong' ps ctx acc)
   | chooseLong' (p::ps) ctx (acc as (Err _, _)) =
     (case p ctx of
-        res as (Ok (ok, {idx=idx, ...} : Parser.ctx)) => chooseLong' ps ctx (res, idx)
+        res as (Ok (ok, Parser.Ctx {idx=idx, ...})) => chooseLong' ps ctx (res, idx)
       | Err _ => chooseLong' ps ctx acc)
 fun chooseLong ps ctx = #1 (chooseLong' ps ctx (Err (("ERROR in choose with no correct choice"), ctx), 0))
 
@@ -215,7 +226,7 @@ val coreId = check (fn s => not (List.exists (fn r => (String.compare (s, r)) = 
                                        (chain [Parser.map (fn x => [x]) letter,
                                                many (choose [letter, digit, ch #"_", ch #"'"])]),
                             Parser.map String.implode (some symbolic)])
-val coreInfixId = checkFull (fn (s, {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId
+val coreInfixId = checkFull (fn (s, Parser.Ctx {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId
 (* TODO: A bit more special than just one/two primes at the start *)
 val coreVar = ignoreLeft (ch #"'") (Parser.map (fn ls => String.implode (List.concat ls))
                                 (chain [Parser.map (fn x => [x]) letter,
@@ -235,7 +246,8 @@ and coreTyp ctx = Parser.map TypVar coreVar ctx
 and coreDecl ctx = Parser.map DeclPlaceholder (notChs [#"i"]) ctx
 
 and coreATExp ctx =
-    choose [Parser.map ExpCon coreCon,
+    Parser.memoize "coreATExp"
+    (choose [Parser.map ExpCon coreCon,
             Parser.map ExpValId
                        (chain2 (opt false (Parser.map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
             between (ch #"(") coreExp (ch #")"),
@@ -266,36 +278,41 @@ and coreATExp ctx =
                                (between (between space (str "in") space)
                                         (Parser.map List.concat (chain [chain [coreExp],
                                                                         many (ignoreLeft (spacedCh #";") coreExp)]))
-                                        (ignoreLeft space (str "end")))))]
+                                        (ignoreLeft space (str "end")))))])
            ctx
 
 (* TODO: Infix and App correction required *)
 and coreAppExp ctx =
-    choose [Parser.map ExpApp
+    Parser.memoize "coreAppExp"
+    (choose [Parser.map ExpApp
                        (Parser.map List.concat (chain [chain [coreATExp], some (ignoreLeft space coreATExp)])),
-            coreATExp] ctx
+            coreATExp]) ctx
 
 and coreTypeAnnoteExp ctx =
-    choose [Parser.map ExpTypeAnnote
+    Parser.memoize "coreTypeAnnoteExp"
+    (choose [Parser.map ExpTypeAnnote
                        (chain2 (ignoreRight coreAppExp (spacedCh #":"), coreTyp)),
-            coreAppExp] ctx
+            coreAppExp]) ctx
 
 and coreConj ctx =
-    choose [Parser.map ExpConj
+    Parser.memoize "coreConj"
+    (choose [Parser.map ExpConj
                        (chain2 (coreTypeAnnoteExp, ignoreLeft (between someSpace (str "andalso") someSpace) coreExp)),
-            coreTypeAnnoteExp] ctx
+            coreTypeAnnoteExp]) ctx
 
 and coreDisj ctx =
-    choose [Parser.map ExpDisj
+    Parser.memoize "coreDisj"
+    (choose [Parser.map ExpDisj
                        (chain2 (coreConj, ignoreLeft (between someSpace (str "orelse") someSpace) coreExp)),
-            coreConj] ctx
+            coreConj]) ctx
 
-and coreExp ctx =
-    choose [Parser.map ExpExceptionHandle
+and coreExp (ctx : exp Parser.ctx) =
+    Parser.memoize "coreExp"
+    (choose [Parser.map ExpExceptionHandle
                        (chain2 (ignoreRight coreDisj (between someSpace (str "handle") someSpace), coreMatch)),
             coreDisj,
             Parser.map ExpExceptionRaise (ignoreLeft (ignoreRight (str "raise") someSpace) coreExp),
             Parser.map ExpCond (ignoreLeft (ignoreRight (str "if") someSpace) (chain3 (ignoreRight coreExp (between someSpace (str "then") someSpace), ignoreRight coreExp (between someSpace (str "else") someSpace), coreExp))),
             Parser.map ExpIter (ignoreLeft (ignoreRight (str "while") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "do") someSpace), coreExp))),
             Parser.map ExpMatch (ignoreLeft (ignoreRight (str "case") someSpace) (chain2 (ignoreRight coreExp (between someSpace (str "of") someSpace), coreMatch))),
-            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch)] ctx
+            Parser.map ExpFn (ignoreLeft (ignoreRight (str "fn") someSpace) coreMatch)]) ctx

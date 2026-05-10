@@ -20,7 +20,18 @@ structure Parser = struct
                 | ConReal of real (* TODO: Currently unused *)
                 | ConChar of char
                 | ConString of string
-  datatype pat = PatCon of con
+  datatype pat = PatWildcard
+          | PatCon of con
+          | PatConstr of bool * string list * pat option
+          | PatInfixApp of pat * (string * pat) list
+          | PatTuple of pat list
+          | PatLayered of bool * string * typ option * pat
+          | PatRecord of rec_entry_pat list
+          | PatRecordSelect of string
+          | PatList of pat list
+          | PatTypeAnnote of pat * typ
+  and rec_entry_pat = PatRecordEntryA of string * pat
+                    | PatRecordEntryB of string * typ option * pat option
   and typ = TypVar of string
           | TypConstr of typ list * string list
           | TypFun of typ * typ
@@ -48,7 +59,7 @@ structure Parser = struct
           | ExpMatch of exp * (pat * exp) list
           | ExpFn of (pat * exp) list
 
-  datatype ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, httyp: (typ * ctx, string * ctx) result HashArray.hash, htexp: (exp * ctx, string * ctx) result HashArray.hash}
+  datatype ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, httyp: (typ * ctx, string * ctx) result HashArray.hash, htexp: (exp * ctx, string * ctx) result HashArray.hash, htpat: (pat * ctx, string * ctx) result HashArray.hash}
   type 'a parser = ctx -> ('a * ctx, string * ctx) result
 
   fun mapRes f (Ok (ok, ctx)) = Ok (f ok, ctx)
@@ -61,6 +72,16 @@ structure Parser = struct
 
   fun isOk (Ok _) = true
     | isOk (Err _) = false
+
+  fun memoizePat uniq (p : pat parser) (ctx as Ctx {idx, htpat, ...}) =
+      let val uniqid = uniq ^ (Int.toString idx)
+      in case HashArray.sub (htpat, uniqid) of
+            SOME x => x
+          | NONE => let val res = p ctx in
+                        HashArray.update (htpat, uniqid, res);
+                        res
+                    end
+      end
 
   fun memoizeTyp uniq (p : typ parser) (ctx as Ctx {idx, httyp, ...}) =
       let val uniqid = uniq ^ (Int.toString idx)
@@ -93,33 +114,37 @@ structure Parser = struct
           p (Ctx {str=str, idx=0,
                   htinfix=ht,
                   htexp=HashArray.hash (String.size str),
-                  httyp=HashArray.hash (String.size str)})
+                  httyp=HashArray.hash (String.size str),
+                  htpat=HashArray.hash (String.size str)})
       end
 
-  fun ch c (Ctx {str, idx, htinfix, htexp, httyp}) =
-      if idx < (String.size str) andalso String.sub (str, idx) = c
-      then Ok (c, Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp})
-      else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", Ctx {str=str, idx=idx, htinfix=htinfix, htexp=htexp, httyp=httyp})
+  fun const x ctx = Ok (x, ctx)
 
-  fun str s (Ctx {str, idx, htinfix, htexp, httyp}) =
+  fun ch c (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat}) =
+      if idx < (String.size str) andalso String.sub (str, idx) = c
+      then Ok (c, Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
+      else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", ctx)
+
+  fun str s (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat=htpat}) =
       if String.size str - idx < String.size s then
-        Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), Ctx {str=str, idx=idx, htinfix=htinfix, htexp=htexp, httyp=httyp})
+        Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), ctx)
       else let
         val subs = Substring.extract (s, 0, NONE)
         val substr = Substring.substring (str, idx, Substring.size subs)
       in
         if Substring.compare (substr, subs) = EQUAL
-        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htexp=htexp, httyp=httyp})
-        else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", Ctx {str=str, idx=idx, htinfix=htinfix, htexp=htexp, httyp=httyp})
+        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
+        else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", ctx)
       end
 
-  fun notChs cs (ctx as Ctx {str, idx, htinfix, htexp, httyp}) =
+  fun notChs cs (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat}) =
       if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
-      then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp})
+      then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
       else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (List.map String.str cs)) ^ "]\n", ctx)
 
   fun chain2 (p, q) = bindFull (fn (rp, ctx) => map (fn rq => (rp, rq)) q ctx) p
   fun chain3 (p, q, r) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
+  fun chain4 (p, q, r, s) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => map (fn rs => (rp, rq, rr, rs)) s ctx) r ctx) q ctx) p
 
   fun ignoreLeft p q = bindFull (fn (_, ctx) => q ctx) p
   fun ignoreRight p q = bindFull (fn (res, ctx) => (map (fn _ => res) q) ctx) p
@@ -253,14 +278,7 @@ structure Parser = struct
                                               repeat (ignoreLeft (spacedCh sep) core)]))
               (ignoreLeft space right)
 
-  fun coreMatch ctx =
-      map List.concat
-                 (chain [chain [chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)],
-                         many (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)))]) ctx
-
-  and corePat ctx = map PatCon coreCon ctx
-
-  and coreATTyp ctx =
+  fun coreATTyp ctx =
       memoizeTyp "coreATTyp"
       (choose [map TypVar coreVar,
               map (fn _ => TypRecord []) (between (ch #"{") space (ch #"}")),
@@ -284,6 +302,48 @@ structure Parser = struct
       memoizeTyp "coreTyp"
       (choose [between (ch #"(") coreTyp (ch #")"),
               coreAppTyp]) ctx
+
+  fun coreMatch ctx =
+      map List.concat
+                 (chain [chain [chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)],
+                         many (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)))]) ctx
+  and coreRecordEntryPat ctx =
+      choose [map PatRecordEntryA (chain2 (ignoreRight coreLab (spacedCh #"="), corePat)),
+             map PatRecordEntryB (chain3 (coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), opt NONE (map SOME (ignoreLeft (between space (str "as") space) corePat))))] ctx
+
+  and coreATPat ctx =
+      memoizePat "coreATPat"
+      (choose [map PatCon coreCon,
+              map (fn _ => PatWildcard) (ch #"_"),
+              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, ignoreLeft space (map SOME corePat))),
+              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, const NONE)),
+              between (ch #"(") corePat (ch #")"),
+              map (fn _ => PatTuple []) (between (ch #"(") space (ch #")")),
+              map (fn _ => PatRecord []) (between (ch #"{") space (ch #"}")),
+              map (fn _ => PatList []) (between (ch #"[") space (ch #"]")),
+              map PatTuple (listBetween (ch #"(") corePat some #"," (ch #")")),
+              map PatRecord (listBetween (ch #"{") coreRecordEntryPat many #"," (ch #"}")),
+              map PatRecordSelect (ignoreLeft (spacedCh #"#") coreLab),
+              map PatList (listBetween (ch #"[") corePat many #"," (ch #"]"))])
+             ctx
+
+  (* TODO: Has to be checked for being proper infix *)
+  and coreInfixPat ctx =
+      memoizePat "coreInfixPat"
+      (choose [map PatInfixApp
+                         (chain2 (coreATPat, some (chain2 (ignoreLeft space coreId, ignoreLeft space coreATPat)))),
+              coreATPat]) ctx
+
+  and coreTypeAnnotePat ctx =
+      memoizePat "coreTypeAnnotePat"
+      (choose [map PatTypeAnnote
+                         (chain2 (ignoreRight coreInfixPat (spacedCh #":"), coreTyp)),
+              coreInfixPat]) ctx
+
+  and corePat ctx =
+      memoizePat "corePat"
+      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) corePat))),
+              coreTypeAnnotePat]) ctx
 
   and coreDecl ctx = map DeclPlaceholder (ignoreRight (notChs [#"i"]) someSpace) ctx
 

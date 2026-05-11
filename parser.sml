@@ -20,27 +20,44 @@ structure Parser = struct
                 | ConReal of real (* TODO: Currently unused *)
                 | ConChar of char
                 | ConString of string
+  type longid = string list
   datatype pat = PatWildcard
           | PatCon of con
-          | PatConstr of bool * string list * pat option
+          | PatConstr of bool * longid * pat option
           | PatInfixApp of pat * (string * pat) list
           | PatTuple of pat list
           | PatLayered of bool * string * typ option * pat
           | PatRecord of rec_entry_pat list
-          | PatRecordSelect of string
           | PatList of pat list
           | PatTypeAnnote of pat * typ
   and rec_entry_pat = PatRecordEntryA of string * pat
                     | PatRecordEntryB of string * typ option * pat option
   and typ = TypVar of string
-          | TypConstr of typ list * string list
+          | TypConstr of typ list * longid
           | TypFun of typ * typ
           | TypTuple of typ list
           | TypRecord of (string * typ) list
   and decl = DeclVal of string list * (bool * pat * exp) list
-           | DeclPlaceholder of char
+           | DeclFun of string list * decl_fun list
+           | DeclTyp of (string list * string * typ) list
+           | DeclDataTyp of ((string list * string * (string * typ option) list) list) * ((string list * string * typ) list)
+           | DeclDataTypRepl of string * longid
+           | DeclAbsTyp of ((string list * string * (string * typ option) list) list) * ((string list * string * typ) list) * decl
+           | DeclExc of decl_exc list
+           | DeclSeq of decl list
+           | DeclLocal of decl * decl
+           | DeclOpen of longid list
+           | DeclNonfix of string list
+           | DeclInfix of int option * string list
+           (* | DeclStruct of TODO: MODULES *)
+           | DeclEmpty
+  and decl_fun = DeclFunNonfix of (bool * string * pat list * typ option * exp) list
+               | DeclFunInfixOne of (pat * string * pat * typ option * exp) list
+               | DeclFunInfixMany of (pat * string * pat * pat list * typ option * exp) list
+  and decl_exc = DeclExcGen of string * typ option
+               | DeclExcRen of string * longid
   and exp = ExpCon of con
-          | ExpValId of bool * string list
+          | ExpValId of bool * longid
           | ExpApp of exp list
           | ExpInfixApp of exp * string * exp
           | ExpTuple of exp list
@@ -59,7 +76,7 @@ structure Parser = struct
           | ExpMatch of exp * (pat * exp) list
           | ExpFn of (pat * exp) list
 
-  datatype ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, httyp: (typ * ctx, string * ctx) result HashArray.hash, htexp: (exp * ctx, string * ctx) result HashArray.hash, htpat: (pat * ctx, string * ctx) result HashArray.hash}
+  datatype ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, httyp: (typ * ctx, string * ctx) result HashArray.hash, htexp: (exp * ctx, string * ctx) result HashArray.hash, htpat: (pat * ctx, string * ctx) result HashArray.hash, htdecl: (decl * ctx, string * ctx) result HashArray.hash}
   type 'a parser = ctx -> ('a * ctx, string * ctx) result
 
   fun mapRes f (Ok (ok, ctx)) = Ok (f ok, ctx)
@@ -72,6 +89,16 @@ structure Parser = struct
 
   fun isOk (Ok _) = true
     | isOk (Err _) = false
+
+  fun memoizeDecl uniq (p : decl parser) (ctx as Ctx {idx, htdecl, ...}) =
+      let val uniqid = uniq ^ (Int.toString idx)
+      in case HashArray.sub (htdecl, uniqid) of
+            SOME x => x
+          | NONE => let val res = p ctx in
+                        HashArray.update (htdecl, uniqid, res);
+                        res
+                    end
+      end
 
   fun memoizePat uniq (p : pat parser) (ctx as Ctx {idx, htpat, ...}) =
       let val uniqid = uniq ^ (Int.toString idx)
@@ -115,17 +142,22 @@ structure Parser = struct
                   htinfix=ht,
                   htexp=HashArray.hash (String.size str),
                   httyp=HashArray.hash (String.size str),
-                  htpat=HashArray.hash (String.size str)})
+                  htpat=HashArray.hash (String.size str),
+                  htdecl=HashArray.hash (String.size str)})
       end
 
   fun const x ctx = Ok (x, ctx)
 
-  fun ch c (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat}) =
+  datatype waste = Waste
+  fun waste x ctx = map (fn _ => Waste) x ctx
+  fun constWaste ctx = Ok (Waste, ctx)
+
+  fun ch c (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
       if idx < (String.size str) andalso String.sub (str, idx) = c
-      then Ok (c, Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
+      then Ok (c, Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
       else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", ctx)
 
-  fun str s (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat=htpat}) =
+  fun str s (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
       if String.size str - idx < String.size s then
         Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), ctx)
       else let
@@ -133,18 +165,19 @@ structure Parser = struct
         val substr = Substring.substring (str, idx, Substring.size subs)
       in
         if Substring.compare (substr, subs) = EQUAL
-        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
+        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
         else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", ctx)
       end
 
-  fun notChs cs (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat}) =
+  fun notChs cs (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
       if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
-      then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat})
+      then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
       else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (List.map String.str cs)) ^ "]\n", ctx)
 
   fun chain2 (p, q) = bindFull (fn (rp, ctx) => map (fn rq => (rp, rq)) q ctx) p
   fun chain3 (p, q, r) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
   fun chain4 (p, q, r, s) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => map (fn rs => (rp, rq, rr, rs)) s ctx) r ctx) q ctx) p
+  fun chain5 (p, q, r, s, t) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => bindFull (fn (rs, ctx) => map (fn rt => (rp, rq, rr, rs, rt)) t ctx) s ctx) r ctx) q ctx) p
 
   fun ignoreLeft p q = bindFull (fn (_, ctx) => q ctx) p
   fun ignoreRight p q = bindFull (fn (res, ctx) => (map (fn _ => res) q) ctx) p
@@ -272,41 +305,54 @@ structure Parser = struct
   val coreLongId = map List.concat (chain [map (fn x => [x]) coreId, many (ignoreLeft (ch #".") coreId)])
   val coreLab = choose [coreId, map Int.toString conNonZeroNum]
 
+  val coreNonEqLongId = check (fn [s] => String.compare (s, "=") <> EQUAL
+                              | _ => true) coreLongId
+  val coreNonEqId = check (fn s => String.compare (s, "=") <> EQUAL) coreId
+
+  fun oneSep core repeat sepcore = map List.concat (chain [chain [core], repeat sepcore])
+
   fun listBetween left core repeat sep right =
       between (ignoreRight left space)
-              (map List.concat (chain [chain [core],
-                                              repeat (ignoreLeft (spacedCh sep) core)]))
+              (oneSep core repeat (ignoreLeft (spacedCh sep) core))
               (ignoreLeft space right)
+
+  fun listBetweenStr left core repeat sep right =
+      between (ignoreRight left space)
+              (oneSep core repeat (ignoreLeft (between space (str sep) space) core))
+              (ignoreLeft space right)
+
+  fun listSpecial core =
+      choose [between (ignoreRight (ch #"(") space)
+                      (oneSep core many (ignoreLeft (spacedCh #",") core))
+                      (ignoreLeft space (ch #")")),
+              chain [core],
+              const []]
 
   fun coreATTyp ctx =
       memoizeTyp "coreATTyp"
       (choose [map TypVar coreVar,
+              between (ch #"(") coreTyp (ch #")"),
               map (fn _ => TypRecord []) (between (ch #"{") space (ch #"}")),
               map TypRecord (listBetween (ch #"{") (chain2 (ignoreRight coreLab (spacedCh #":"), coreTyp)) many #"," (ch #"}"))]) ctx
   and coreConstrTyp ctx =
       memoizeTyp "coreConstrTyp"
-      (choose [map TypConstr (chain2 ((listBetween (ch #"(") coreTyp many #"," (ch #")")), (ignoreLeft space coreLongId))),
-              map TypConstr (chain2 (opt [] (chain [coreATTyp]), (ignoreLeft space coreLongId))),
+      (choose [map TypConstr (chain2 (listBetween (ch #"(") coreTyp many #"," (ch #")"), (ignoreLeft space coreLongId))),
+              map TypConstr (chain2 (chain [coreATTyp], (ignoreLeft space coreLongId))),
+              map TypConstr (chain2 (const [], coreLongId)),
               coreATTyp]) ctx
   and coreTupleTyp ctx =
       memoizeTyp "coreTupleTyp"
-      (choose [map TypTuple
-                         (map List.concat (chain [chain [coreConstrTyp], some (ignoreLeft (ignoreLeft space (ch #"*")) coreConstrTyp)])),
+      (choose [map TypTuple (oneSep coreConstrTyp some (ignoreLeft (ignoreLeft space (ch #"*")) coreConstrTyp)),
               coreConstrTyp]) ctx
   and coreAppTyp ctx =
       memoizeTyp "coreAppTyp"
-      (choose [map TypFun
-                         (chain2 (coreTupleTyp, ignoreLeft (between someSpace (str "->") someSpace) coreTyp)),
+      (choose [map TypFun (chain2 (coreTupleTyp, ignoreLeft (between someSpace (str "->") someSpace) coreTyp)),
               coreTupleTyp]) ctx
-  and coreTyp ctx =
-      memoizeTyp "coreTyp"
-      (choose [between (ch #"(") coreTyp (ch #")"),
-              coreAppTyp]) ctx
+  and coreTyp ctx = coreAppTyp ctx
 
-  fun coreMatch ctx =
-      map List.concat
-                 (chain [chain [chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)],
-                         many (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp)))]) ctx
+  fun coreMatch ctx = oneSep (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp))
+                             many
+                             (ignoreLeft (spacedCh #"|") (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp))) ctx
   and coreRecordEntryPat ctx =
       choose [map PatRecordEntryA (chain2 (ignoreRight coreLab (spacedCh #"="), corePat)),
              map PatRecordEntryB (chain3 (coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), opt NONE (map SOME (ignoreLeft (between space (str "as") space) corePat))))] ctx
@@ -315,24 +361,26 @@ structure Parser = struct
       memoizePat "coreATPat"
       (choose [map PatCon coreCon,
               map (fn _ => PatWildcard) (ch #"_"),
-              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, ignoreLeft space (map SOME corePat))),
-              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, const NONE)),
               between (ch #"(") corePat (ch #")"),
               map (fn _ => PatTuple []) (between (ch #"(") space (ch #")")),
               map (fn _ => PatRecord []) (between (ch #"{") space (ch #"}")),
               map (fn _ => PatList []) (between (ch #"[") space (ch #"]")),
               map PatTuple (listBetween (ch #"(") corePat some #"," (ch #")")),
               map PatRecord (listBetween (ch #"{") coreRecordEntryPat many #"," (ch #"}")),
-              map PatRecordSelect (ignoreLeft (spacedCh #"#") coreLab),
-              map PatList (listBetween (ch #"[") corePat many #"," (ch #"]"))])
-             ctx
+              map PatList (listBetween (ch #"[") corePat many #"," (ch #"]"))]) ctx
+
+  and coreConstrPat ctx =
+      memoizePat "coreConstrPat"
+      (choose [map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, ignoreLeft space (map SOME coreATPat))),
+              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, const NONE)),
+              coreATPat]) ctx
 
   (* TODO: Has to be checked for being proper infix *)
   and coreInfixPat ctx =
       memoizePat "coreInfixPat"
       (choose [map PatInfixApp
-                         (chain2 (coreATPat, some (chain2 (ignoreLeft space coreId, ignoreLeft space coreATPat)))),
-              coreATPat]) ctx
+                         (chain2 (coreConstrPat, some (chain2 (ignoreLeft space coreId, ignoreLeft space coreConstrPat)))),
+              coreConstrPat]) ctx
 
   and coreTypeAnnotePat ctx =
       memoizePat "coreTypeAnnotePat"
@@ -345,13 +393,77 @@ structure Parser = struct
       (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) corePat))),
               coreTypeAnnotePat]) ctx
 
-  and coreDecl ctx = map DeclPlaceholder (ignoreRight (notChs [#"i"]) someSpace) ctx
+  and coreNonEqConstrPat ctx =
+      memoizePat "coreNonEqConstrPat"
+      (choose [map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId, ignoreLeft space (map SOME coreATPat))),
+              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId, const NONE)),
+              coreATPat]) ctx
+
+  and coreNonEqInfixPat ctx =
+      memoizePat "coreNonEqInfixPat"
+      (choose [map PatInfixApp
+                         (chain2 (coreNonEqConstrPat, some (chain2 (ignoreLeft space coreNonEqId, ignoreLeft space coreNonEqConstrPat)))),
+              coreNonEqConstrPat]) ctx
+
+  and coreNonEqTypeAnnotePat ctx =
+      memoizePat "coreNonEqTypeAnnotePat"
+      (choose [map PatTypeAnnote
+                         (chain2 (ignoreRight coreNonEqInfixPat (spacedCh #":"), coreTyp)),
+              coreNonEqInfixPat]) ctx
+
+  and coreNonEqPat ctx =
+      memoizePat "coreNonEqPat"
+      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) coreNonEqPat))),
+              coreNonEqTypeAnnotePat]) ctx
+
+  and coreValBind ctx = chain3 (opt false (map (fn _ => true) (ignoreRight (str "rec") someSpace)), coreNonEqPat, ignoreLeft (spacedCh #"=") coreExp) ctx
+  and coreFunBindNonFix ctx = (chain5 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)),
+                                                           coreId,
+                                                           some (ignoreLeft space coreNonEqPat),
+                                                           opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                                           ignoreLeft (spacedCh #"=") coreExp)) ctx
+  (* TODO: Handle infix functions *)
+  and coreFunBind ctx = choose [map DeclFunNonfix (oneSep coreFunBindNonFix many (ignoreLeft (spacedCh #"|") coreFunBindNonFix))] ctx
+  and coreTypBind ctx = chain3 (listSpecial coreVar, between space coreId (spacedCh #"="), coreTyp) ctx
+  and coreExcBind ctx = choose [map DeclExcRen (chain2 (coreNonEqId, ignoreLeft (spacedCh #"=") coreLongId)),
+                                map DeclExcGen (chain2 (coreId, opt NONE (map SOME (ignoreLeft (between space (str "of") space) coreTyp))))] ctx
+  and coreConBind ctx = chain2 (coreId, opt NONE (map SOME (ignoreLeft (between space (str "of") space) coreTyp))) ctx
+  and coreDataTypBind ctx = chain3 (listSpecial coreVar, between space coreId (spacedCh #"="), (oneSep coreConBind many (ignoreLeft (spacedCh #"|") coreConBind))) ctx
+
+  and coreATDecl ctx =
+      memoizeDecl "coreATDecl"
+      (choose [map DeclVal (chain2 (ignoreLeft (ignoreRight (str "val") space) (listSpecial coreVar),
+                                   ignoreLeft space (listBetweenStr space coreValBind many "and" constWaste))),
+              map DeclFun (chain2 (ignoreLeft (ignoreRight (str "fun") space) (listSpecial coreVar),
+                                   ignoreLeft space (listBetweenStr space coreFunBind many "and" constWaste))),
+              map DeclTyp (ignoreLeft (ignoreRight (str "type") space)
+                                      (listBetweenStr space coreTypBind many "and" constWaste)),
+              map DeclExc (ignoreLeft (ignoreRight (str "exception") space)
+                                      (listBetweenStr space coreExcBind many "and" constWaste)),
+              map DeclLocal (chain2 (ignoreLeft (ignoreRight (str "local") space) coreDecl, between (between space (str "in") space) coreDecl (ignoreLeft space (str "end")))),
+              map DeclOpen (ignoreLeft (str "open") (some (ignoreLeft space coreLongId))),
+              map DeclNonfix (ignoreLeft (str "nonfix") (some (ignoreLeft space coreId))),
+              map DeclInfix (ignoreLeft (ignoreRight (str "infixr") space) (chain2 (opt NONE (map (fn x => SOME (~x)) conDigit), (some (ignoreLeft space coreId))))),
+              map DeclInfix (ignoreLeft (ignoreRight (str "infix") space) (chain2 (opt NONE (map SOME conDigit), (some (ignoreLeft space coreId))))),
+              map DeclDataTypRepl (chain2 (ignoreLeft (ignoreRight (str "datatype") space) coreNonEqId, ignoreLeft (between (spacedCh #"=") (str "datatype") space) coreLongId)),
+              map DeclDataTyp (chain2 (ignoreLeft (ignoreRight (str "datatype") space)
+                                                  (listBetweenStr space coreDataTypBind many "and" constWaste),
+                                       opt [] (ignoreLeft (ignoreLeft space (str "withtype")) (listBetweenStr space coreTypBind many "and" constWaste)))),
+              map DeclAbsTyp (chain3 (ignoreLeft (ignoreRight (str "datatype") space)
+                                                  (listBetweenStr space coreDataTypBind many "and" constWaste),
+                                      opt [] (ignoreLeft (ignoreLeft space (str "withtype")) (listBetweenStr space coreTypBind many "and" constWaste)),
+                                      between (between space (str "with") space)
+                                              coreDecl
+                                              (ignoreLeft space (str "end"))))]) ctx
+
+  and coreDecl ctx =
+      memoizeDecl "coreDecl"
+      (map DeclSeq (some (ignoreLeft (choose [waste (some (spacedCh #";")), waste space]) coreATDecl))) ctx
 
   and coreATExp ctx =
       memoizeExp "coreATExp"
       (choose [map ExpCon coreCon,
-              map ExpValId
-                         (chain2 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
+              map ExpValId (chain2 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
               between (ch #"(") coreExp (ch #")"),
               map (fn _ => ExpTuple []) (between (ch #"(") space (ch #")")),
               map (fn _ => ExpRecord []) (between (ch #"{") space (ch #"}")),

@@ -1,19 +1,6 @@
 (* This Source Code Form is subject to the terms of the Mozilla Public
    License, v. 2.0. If a copy of the MPL was not distributed with this
    file, You can obtain one at http://mozilla.org/MPL/2.0/. *)
-datatype ('ok, 'err) result = Ok of 'ok
-                            | Err of 'err
-infix 1 |>
-fun x |> y = (y x)
-
-structure Result = struct
-  fun map f (Ok ok) = Ok (f ok)
-    | map f (Err err) = Err err
-
-  fun bind f (Ok ok) = (f ok)
-    | bind f (Err err) = Err err
-end
-
 structure Parser = struct
   datatype con = ConInt of int
                 | ConWord of word (* TODO: Currently unused *)
@@ -76,7 +63,12 @@ structure Parser = struct
           | ExpMatch of exp * (pat * exp) list
           | ExpFn of (pat * exp) list
 
-  datatype ctx = Ctx of {str: string, idx: int, htinfix: int HashArray.hash, httyp: (typ * ctx, string * ctx) result HashArray.hash, htexp: (exp * ctx, string * ctx) result HashArray.hash, htpat: (pat * ctx, string * ctx) result HashArray.hash, htdecl: (decl * ctx, string * ctx) result HashArray.hash}
+  datatype ctx = Ctx of {str: string, idx: int,
+                         htinfix: int HashArray.hash,
+                         httyp: (typ * ctx, string * ctx) result HashArray.hash,
+                         htexp: (exp * ctx, string * ctx) result HashArray.hash,
+                         htpat: (pat * ctx, string * ctx) result HashArray.hash,
+                         htdecl: (decl * ctx, string * ctx) result HashArray.hash}
   type 'a parser = ctx -> ('a * ctx, string * ctx) result
 
   fun mapRes f (Ok (ok, ctx)) = Ok (f ok, ctx)
@@ -89,6 +81,11 @@ structure Parser = struct
 
   fun isOk (Ok _) = true
     | isOk (Err _) = false
+
+  fun rewriteErr str p ctx =
+      case p ctx of
+          Ok ok => Ok ok
+        | Err (err, ctx) => Err (str, ctx)
 
   fun memoizeDecl uniq (p : decl parser) (ctx as Ctx {idx, htdecl, ...}) =
       let val uniqid = uniq ^ (Int.toString idx)
@@ -173,6 +170,11 @@ structure Parser = struct
       if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
       then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
       else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (List.map String.str cs)) ^ "]\n", ctx)
+
+  fun eof (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
+      if idx >= (String.size str)
+      then constWaste ctx
+      else Err ("ERROR in eof: Not EOF\n", ctx)
 
   fun chain2 (p, q) = bindFull (fn (rp, ctx) => map (fn rq => (rp, rq)) q ctx) p
   fun chain3 (p, q, r) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
@@ -298,7 +300,6 @@ structure Parser = struct
                                                  many (choose [letter, digit, ch #"_", ch #"'"])]),
                               map String.implode (some symbolic)])
   val coreInfixId = checkFull (fn (s, Ctx {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId
-  (* TODO: A bit more special than just one/two primes at the start *)
   val coreVar = ignoreLeft (ch #"'") (map (fn ls => String.implode (List.concat ls))
                                   (chain [map (fn x => [x]) letter,
                                           many (choose [letter, digit, ch #"_", ch #"'"])]))
@@ -375,7 +376,6 @@ structure Parser = struct
               map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, const NONE)),
               coreATPat]) ctx
 
-  (* TODO: Has to be checked for being proper infix *)
   and coreInfixPat ctx =
       memoizePat "coreInfixPat"
       (choose [map PatInfixApp
@@ -478,7 +478,6 @@ structure Parser = struct
                                   (listBetween (str "in") coreExp many #";" (str "end"))))])
              ctx
 
-  (* TODO: Infix and App correction required *)
   and coreAppExp ctx =
       memoizeExp "coreAppExp"
       (choose [map ExpApp

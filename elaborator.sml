@@ -5,28 +5,51 @@
 structure Elaborator = struct
   structure P = Parser
   exception IllegalElab of string
+  exception ImproperElabResult of P.exp list
 
-  fun checkInfix [id] (P.Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
-    | checkInfix [] _ = NONE
-    | checkInfix (x::xs) ctx = checkInfix xs ctx
+  fun checkInfix id (P.Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
 
-  fun shuntingYard [] ctx [] valst = P.ExpApp valst
-    | shuntingYard [] ctx ((p,exp)::opst) valst = shuntingYard [] ctx opst (exp::valst)
-    | shuntingYard ((exp as P.ExpValId (false, id)) :: exps) ctx opst valst =
+  fun shuntingYardCombineOp (p, id) exps ctx opst (v::u::valst) =
+      if p >= 0
+      then shuntingYard exps ctx opst ((P.ExpInfixApp (u, id, v))::valst) false
+      else shuntingYard exps ctx opst ((P.ExpInfixApp (v, id, u))::valst) false
+    | shuntingYardCombineOp (p, id) exps ctx opst ((P.ExpApp (e::es))::valst) =
+      if p >= 0
+      then shuntingYard exps ctx opst ((P.ExpInfixApp (P.ExpApp es, id, e))::valst) false
+      else shuntingYard exps ctx opst ((P.ExpInfixApp (e, id, P.ExpApp es))::valst) false
+    | shuntingYardCombineOp (p, id) exps ctx opst _ = raise IllegalElab "Elaborator Error: Infix operator has no operands."
+
+  and shuntingYardCombineExp exp exps ctx opst (allvalst as ((P.ExpApp es)::valst)) b =
+      if b
+      then shuntingYard exps ctx opst ((P.ExpApp (exp::es))::valst) true
+      else shuntingYard exps ctx opst (exp::allvalst) true
+    | shuntingYardCombineExp exp exps ctx opst (allvalst as (e::valst)) b =
+      if b
+      then shuntingYard exps ctx opst ((P.ExpApp (exp::[e]))::valst) true
+      else shuntingYard exps ctx opst (exp::allvalst) true
+    | shuntingYardCombineExp exp exps ctx opst [] b = shuntingYard exps ctx opst [exp] true
+
+  and shuntingYard [] ctx [] [v] _ = v
+    | shuntingYard [] ctx [] xs _ = raise ImproperElabResult xs
+    | shuntingYard [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOp (p, id) [] ctx opst valst
+    | shuntingYard ((exp as P.ExpValId (false, [id])) :: exps) ctx opst valst b =
       (case checkInfix id ctx of
           SOME pow => (case opst of
-                           [] => shuntingYard exps ctx [(pow,exp)] valst
-                         | ((p,e)::oprest) => if p > pow
-                                         then shuntingYard exps ctx ((pow,exp)::opst) valst
-                                         else shuntingYard exps ctx ((pow,exp)::oprest) (e::valst))
-        | NONE => shuntingYard exps ctx opst (exp::valst))
-    | shuntingYard ((exp as P.ExpValId (true, id)) :: exps) ctx opst valst =
+                           [] => shuntingYard exps ctx [(pow,id)] valst false
+                         | ((p,i)::oprest) => if pow >= p
+                                              then shuntingYard exps ctx ((pow,id)::opst) valst false
+                                              else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst)
+        | NONE => shuntingYardCombineExp exp exps ctx opst valst b)
+    | shuntingYard ((exp as P.ExpValId (true, [id])) :: exps) ctx opst valst b =
       (case checkInfix id ctx of
-          SOME _ => shuntingYard exps ctx opst (exp::valst)
-        | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
-    | shuntingYard (exp::exps) ctx opst valst = shuntingYard exps ctx opst (exp::valst)
+           SOME _ => shuntingYardCombineExp exp exps ctx opst valst b
+         | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
+    | shuntingYard ((exp as P.ExpValId (true, _)) :: exps) ctx opst valst b = raise IllegalElab "Elaborator Error: `op` applied to a nonfix value construct. Constructs cannot be infixed (e.g. Module.+ has to be nonfix)"
+    | shuntingYard (exp::exps) ctx opst valst true = shuntingYardCombineExp exp exps ctx opst valst true
+    | shuntingYard (exp::exps) ctx opst valst false = shuntingYardCombineExp exp exps ctx opst valst false
 
-  fun elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] []
+  (* TODO: Handle all cases of multiple exps *)
+  fun elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] [] false
     | elaborateExp (ast, _) = ast
 
   (* TODO: Handle modules and local-let kind scopes for infixes

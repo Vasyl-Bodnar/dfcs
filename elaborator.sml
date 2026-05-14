@@ -45,16 +45,29 @@ structure Elaborator = struct
            SOME _ => shuntingYardCombineExp exp exps ctx opst valst b
          | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
     | shuntingYard ((exp as P.ExpValId (true, _)) :: exps) ctx opst valst b = raise IllegalElab "Elaborator Error: `op` applied to a nonfix value construct. Constructs cannot be infixed (e.g. Module.+ has to be nonfix)"
-    | shuntingYard (exp::exps) ctx opst valst true = shuntingYardCombineExp exp exps ctx opst valst true
-    | shuntingYard (exp::exps) ctx opst valst false = shuntingYardCombineExp exp exps ctx opst valst false
+    | shuntingYard (exp::exps) ctx opst valst true = shuntingYardCombineExp (elaborateExp (exp, ctx)) exps ctx opst valst true
+    | shuntingYard (exp::exps) ctx opst valst false = shuntingYardCombineExp (elaborateExp (exp, ctx)) exps ctx opst valst false
 
-  (* TODO: Handle all cases of multiple exps *)
-  fun elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] [] false
+  and elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] [] false
+    | elaborateExp (P.ExpTuple exps, ctx) = P.ExpTuple (List.map (fn exp => elaborateExp (exp, ctx)) exps)
+    | elaborateExp (P.ExpRecord rows, ctx) = P.ExpRecord (List.map (fn (lab, exp) => (lab, elaborateExp (exp, ctx))) rows)
+    | elaborateExp (P.ExpList exps, ctx) = P.ExpList (List.map (fn exp => elaborateExp (exp, ctx)) exps)
+    | elaborateExp (P.ExpSeq exps, ctx) = P.ExpSeq (List.map (fn exp => elaborateExp (exp, ctx)) exps)
+    | elaborateExp (P.ExpLocalDecl (decl, exps), ctx) = P.ExpLocalDecl (elaborateDecl (decl, ctx), (List.map (fn exp => elaborateExp (exp, ctx)) exps))
+    | elaborateExp (P.ExpTypeAnnote (exp, typ), ctx) = P.ExpTypeAnnote (elaborateExp (exp, ctx), typ)
+    | elaborateExp (P.ExpExceptionRaise exp, ctx) = P.ExpExceptionRaise (elaborateExp (exp, ctx))
+    | elaborateExp (P.ExpExceptionHandle (exp, matches), ctx) = P.ExpExceptionHandle (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
+    | elaborateExp (P.ExpConj (expl, expr), ctx) = P.ExpConj (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
+    | elaborateExp (P.ExpDisj (expl, expr), ctx) = P.ExpDisj (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
+    | elaborateExp (P.ExpCond (expl, expm, expr), ctx) = P.ExpCond (elaborateExp (expl, ctx), elaborateExp (expm, ctx), elaborateExp (expr, ctx))
+    | elaborateExp (P.ExpIter (expl, expr), ctx) = P.ExpIter (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
+    | elaborateExp (P.ExpMatch (exp, matches), ctx) = P.ExpMatch (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
+    | elaborateExp (P.ExpFn matches, ctx) = P.ExpFn (List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
     | elaborateExp (ast, _) = ast
 
   (* TODO: Handle modules and local-let kind scopes for infixes
      Can also handle it later on with scope managing semantics checking *)
-  fun elaborateDecl (P.DeclSeq seq, ctx) =
+  and elaborateDecl (P.DeclSeq seq, ctx) =
       P.DeclSeq (List.map (fn x => elaborateDecl (x, ctx)) seq)
     | elaborateDecl (P.DeclVal (vars, vals), ctx) =
       P.DeclVal (vars, List.map (fn (b, p, e) => (b, p, elaborateExp (e, ctx))) vals)

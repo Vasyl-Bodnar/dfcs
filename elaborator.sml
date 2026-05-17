@@ -8,6 +8,8 @@ structure Elaborator = struct
   exception ImproperElabResult of P.exp list
 
   fun checkInfix id (P.Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
+  fun removeInfix id (P.Ctx {htinfix, ...}) = HashArray.delete (htinfix, id)
+  fun addInfix fix id (P.Ctx {htinfix, ...}) = HashArray.update (htinfix, id, fix)
 
   fun shuntingYardCombineOp (p, id) exps ctx opst (v::u::valst) =
       if p >= 0
@@ -67,9 +69,30 @@ structure Elaborator = struct
 
   (* TODO: Handle modules and local-let kind scopes for infixes
      Can also handle it later on with scope managing semantics checking *)
-  and elaborateDecl (P.DeclSeq seq, ctx) =
+  and elaborateDecl (P.DeclSeq [decl], ctx) = elaborateDecl (decl, ctx)
+    | elaborateDecl (P.DeclSeq seq, ctx) =
       P.DeclSeq (List.map (fn x => elaborateDecl (x, ctx)) seq)
     | elaborateDecl (P.DeclVal (vars, vals), ctx) =
-      P.DeclVal (vars, List.map (fn (b, p, e) => (b, p, elaborateExp (e, ctx))) vals)
+      P.DeclVal (vars, List.map (fn (b, p, exp) => (b, p, elaborateExp (exp, ctx))) vals)
+    | elaborateDecl (P.DeclFun (vars, fs), ctx) =
+      P.DeclFun (vars, List.map (fn P.DeclFunNonfix matches =>
+                                    P.DeclFunNonfix (List.map (fn (b, id, ps, typ, exp) =>
+                                                                  (b, id, ps, typ, elaborateExp (exp, ctx))) matches)) fs)
+    | elaborateDecl (P.DeclAbsTyp (dbind, tbind, decl), ctx) =
+      P.DeclAbsTyp (dbind, tbind, elaborateDecl (decl, ctx))
+    | elaborateDecl (P.DeclLocal (decll, declr), ctx) =
+      P.DeclLocal (elaborateDecl (decll, ctx), elaborateDecl (declr, ctx))
+    | elaborateDecl (P.DeclNonfix ids, ctx) =
+      let val _ = List.app (fn id => removeInfix id ctx) ids
+      in P.DeclNonfix ids
+      end
+    | elaborateDecl (P.DeclInfix (SOME fix, ids), ctx) =
+      let val _ = List.app (fn id => addInfix fix id ctx) ids
+      in P.DeclInfix (SOME fix, ids)
+      end
+    | elaborateDecl (P.DeclInfix (NONE, ids), ctx) =
+      let val _ = List.app (fn id => addInfix 0 id ctx) ids
+      in P.DeclInfix (SOME 0, ids)
+      end
     | elaborateDecl (ast, _) = ast
 end

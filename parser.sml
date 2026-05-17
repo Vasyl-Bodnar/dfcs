@@ -36,6 +36,7 @@ structure Parser = struct
            | DeclOpen of longid list
            | DeclNonfix of string list
            | DeclInfix of int option * string list
+           | DeclInfixR of int option * string list
            (* | DeclStruct of TODO: MODULES *)
            | DeclEmpty
   and decl_fun = DeclFunNonfix of (bool * string * pat list * typ option * exp) list
@@ -131,7 +132,7 @@ structure Parser = struct
       let val ht = HashArray.hash 20 in
           app (fn (name, fix) => HashArray.update (ht, name, fix))
               [("*", 7), ("/", 7), ("div", 7), ("mod",7),
-               ("+", 6), ("-", 6), ("^", 6), ("::", ~5), ("@", ~5),
+               ("+", 6), ("-", 6), ("^", 6), ("::", ~6), ("@", ~6),
                ("=", 4), ("<>", 4), (">", 4), ("<", 4), (">=", 4), ("<=", 4),
                (":=", 3), ("o", 3), ("before", 0)];
           (* NOTE: String.size might be too much in some cases, better heuristic appreciated *)
@@ -443,7 +444,7 @@ structure Parser = struct
               map DeclLocal (chain2 (ignoreLeft (ignoreRight (str "local") space) coreDecl, between (between space (str "in") space) coreDecl (ignoreLeft space (str "end")))),
               map DeclOpen (ignoreLeft (str "open") (some (ignoreLeft space coreLongId))),
               map DeclNonfix (ignoreLeft (str "nonfix") (some (ignoreLeft space coreId))),
-              map DeclInfix (ignoreLeft (ignoreRight (str "infixr") space) (chain2 (opt NONE (map (fn x => SOME (~x)) conDigit), (some (ignoreLeft space coreId))))),
+              map DeclInfixR (ignoreLeft (ignoreRight (str "infixr") space) (chain2 (opt NONE (map SOME conDigit), (some (ignoreLeft space coreId))))),
               map DeclInfix (ignoreLeft (ignoreRight (str "infix") space) (chain2 (opt NONE (map SOME conDigit), (some (ignoreLeft space coreId))))),
               map DeclDataTypRepl (chain2 (ignoreLeft (ignoreRight (str "datatype") space) coreNonEqId, ignoreLeft (between (spacedCh #"=") (str "datatype") space) coreLongId)),
               map DeclDataTyp (chain2 (ignoreLeft (ignoreRight (str "datatype") space)

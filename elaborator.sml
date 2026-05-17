@@ -38,9 +38,24 @@ structure Elaborator = struct
       (case checkInfix id ctx of
           SOME pow => (case opst of
                            [] => shuntingYard exps ctx [(pow,id)] valst false
-                         | ((p,i)::oprest) => if pow >= p
-                                              then shuntingYard exps ctx ((pow,id)::opst) valst false
-                                              else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst)
+                         | ((p,i)::oprest) =>
+                           case (p < 0, pow < 0) of
+                               (true, true) => if pow <= p
+                                               then shuntingYard exps ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst
+                             | (false, false) => if pow >= p
+                                               then shuntingYard exps ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst
+                             | (true, false) => if pow = (~p - 1)
+                                               then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
+                                               else (if pow >= (~p - 1)
+                                               then shuntingYard exps ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst)
+                             | (false, true) => if (~pow - 1) = p
+                                               then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
+                                               else (if (~pow - 1) >= p
+                                               then shuntingYard exps ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst))
         | NONE => shuntingYardCombineExp exp exps ctx opst valst b)
     | shuntingYard ((exp as P.ExpValId (true, [id])) :: exps) ctx opst valst b =
       (case checkInfix id ctx of
@@ -93,6 +108,14 @@ structure Elaborator = struct
     | elaborateDecl (P.DeclInfix (NONE, ids), ctx) =
       let val _ = List.app (fn id => addInfix 0 id ctx) ids
       in P.DeclInfix (SOME 0, ids)
+      end
+    | elaborateDecl (P.DeclInfixR (SOME fix, ids), ctx) =
+      let val _ = List.app (fn id => addInfix (~fix - 1) id ctx) ids
+      in P.DeclInfixR (SOME (~fix - 1), ids)
+      end
+    | elaborateDecl (P.DeclInfixR (NONE, ids), ctx) =
+      let val _ = List.app (fn id => addInfix ~1 id ctx) ids
+      in P.DeclInfixR (SOME ~1, ids)
       end
     | elaborateDecl (ast, _) = ast
 end

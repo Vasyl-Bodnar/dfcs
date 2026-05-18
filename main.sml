@@ -6,3 +6,5 @@ val _ = PolyML.make "result"
 val _ = PolyML.make "parser"
 
 val _ = PolyML.make "elaborator"
+
+val _ = PolyML.make "inferencer"

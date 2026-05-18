@@ -13,10 +13,10 @@ structure Parser = struct
           | PatConstr of bool * longid * pat option
           | PatInfixApp of pat * (string * pat) list
           | PatTuple of pat list
-          | PatLayered of bool * string * typ option * pat
+          | PatLayered of bool * string * typ option ref * pat
           | PatRecord of rec_entry_pat list
           | PatList of pat list
-          | PatTypeAnnote of pat * typ
+          | PatTypeAnnote of pat * typ option ref
   and rec_entry_pat = PatRecordEntryA of string * pat
                     | PatRecordEntryB of string * typ option * pat option
   and typ = TypVar of string
@@ -39,9 +39,9 @@ structure Parser = struct
            | DeclInfixR of int option * string list
            (* | DeclStruct of TODO: MODULES *)
            | DeclEmpty
-  and decl_fun = DeclFunNonfix of (bool * string * pat list * typ option * exp) list
-               | DeclFunInfixOne of (pat * string * pat * typ option * exp) list
-               | DeclFunInfixMany of (pat * string * pat * pat list * typ option * exp) list
+  and decl_fun = DeclFunNonfix of (bool * string * pat list * typ option ref * exp) list
+               | DeclFunInfixOne of (pat * string * pat * typ option ref * exp) list
+               | DeclFunInfixMany of (pat * string * pat * pat list * typ option ref * exp) list
   and decl_exc = DeclExcGen of string * typ option
                | DeclExcRen of string * longid
   and exp = ExpCon of con
@@ -56,7 +56,7 @@ structure Parser = struct
           | ExpLocalDecl of decl * exp list
           | ExpConj of exp * exp
           | ExpDisj of exp * exp
-          | ExpTypeAnnote of exp * typ
+          | ExpTypeAnnote of exp * typ option ref
           | ExpExceptionRaise of exp
           | ExpExceptionHandle of exp * (pat * exp) list
           | ExpCond of exp * exp * exp
@@ -386,12 +386,12 @@ structure Parser = struct
   and coreTypeAnnotePat ctx =
       memoizePat "coreTypeAnnotePat"
       (choose [map PatTypeAnnote
-                         (chain2 (ignoreRight coreInfixPat (spacedCh #":"), coreTyp)),
+                         (chain2 (ignoreRight coreInfixPat (spacedCh #":"), map (fn t => ref (SOME t)) coreTyp)),
               coreInfixPat]) ctx
 
   and corePat ctx =
       memoizePat "corePat"
-      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) corePat))),
+      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt (ref NONE) (ignoreLeft (spacedCh #":") (map (fn t => ref (SOME t)) coreTyp)), (ignoreLeft (between space (str "as") space) corePat))),
               coreTypeAnnotePat]) ctx
 
   and coreNonEqConstrPat ctx =
@@ -409,19 +409,19 @@ structure Parser = struct
   and coreNonEqTypeAnnotePat ctx =
       memoizePat "coreNonEqTypeAnnotePat"
       (choose [map PatTypeAnnote
-                         (chain2 (ignoreRight coreNonEqInfixPat (spacedCh #":"), coreTyp)),
+                         (chain2 (ignoreRight coreNonEqInfixPat (spacedCh #":"), map (fn t => ref (SOME t)) coreTyp)),
               coreNonEqInfixPat]) ctx
 
   and coreNonEqPat ctx =
       memoizePat "coreNonEqPat"
-      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) coreNonEqPat))),
+      (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt (ref NONE) (ignoreLeft (spacedCh #":") (map (fn t => ref (SOME t)) coreTyp)), (ignoreLeft (between space (str "as") space) coreNonEqPat))),
               coreNonEqTypeAnnotePat]) ctx
 
   and coreValBind ctx = chain3 (opt false (map (fn _ => true) (ignoreRight (str "rec") someSpace)), coreNonEqPat, ignoreLeft (spacedCh #"=") coreExp) ctx
   and coreFunBindNonFix ctx = (chain5 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)),
                                                            coreId,
                                                            some (ignoreLeft space coreNonEqPat),
-                                                           opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                                           opt (ref NONE) (ignoreLeft (spacedCh #":") (map (fn t => ref (SOME t)) coreTyp)),
                                                            ignoreLeft (spacedCh #"=") coreExp)) ctx
   (* TODO: Handle infix functions *)
   and coreFunBind ctx = choose [map DeclFunNonfix (oneSep coreFunBindNonFix many (ignoreLeft (spacedCh #"|") coreFunBindNonFix))] ctx
@@ -488,7 +488,7 @@ structure Parser = struct
   and coreTypeAnnoteExp ctx =
       memoizeExp "coreTypeAnnoteExp"
       (choose [map ExpTypeAnnote
-                         (chain2 (ignoreRight coreAppExp (spacedCh #":"), coreTyp)),
+                         (chain2 (ignoreRight coreAppExp (spacedCh #":"), map (fn t => ref (SOME t)) coreTyp)),
               coreAppExp]) ctx
 
   and coreConjExp ctx =

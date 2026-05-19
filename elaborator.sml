@@ -7,9 +7,11 @@ structure Elaborator = struct
   exception IllegalElab of string
   exception ImproperElabResult of P.exp list
 
-  fun checkInfix id (P.Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
-  fun removeInfix id (P.Ctx {htinfix, ...}) = HashArray.delete (htinfix, id)
-  fun addInfix fix id (P.Ctx {htinfix, ...}) = HashArray.update (htinfix, id, fix)
+  datatype ctx = Ctx of {htinfix: int HashArray.hash}
+
+  fun checkInfix id (Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
+  fun removeInfix id (Ctx {htinfix, ...}) = HashArray.delete (htinfix, id)
+  fun addInfix fix id (Ctx {htinfix, ...}) = HashArray.update (htinfix, id, fix)
 
   fun shuntingYardCombineOp (p, id) exps ctx opst (v::u::valst) =
       if p >= 0
@@ -118,4 +120,6 @@ structure Elaborator = struct
       in P.DeclInfixR (SOME ~1, ids)
       end
     | elaborateDecl (ast, _) = ast
+
+  fun elaborate (decl, P.Ctx {htinfix, ...}) = elaborateDecl (decl, Ctx {htinfix=htinfix})
 end

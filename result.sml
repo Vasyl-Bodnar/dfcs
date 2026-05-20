@@ -9,4 +9,7 @@ structure Result = struct
     | bind f (Err err) = Err err
 
   fun seq init res = List.foldr (fn (x, acc) => bind (fn _ => x) acc) init res
+
+  fun isOk (Ok _) = true
+    | isOk (Err _) = false
 end

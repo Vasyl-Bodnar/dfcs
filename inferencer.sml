@@ -63,8 +63,14 @@ structure Inferencer = struct
           Int.toString ret
       end
 
-  (* TODO: This should work *)
-  fun occurs tyx tyy = false
+  fun occurs' (InfTypUnbound (namel, _)) (InfTypUnbound (namer, _)) = namel = namer
+
+  fun occurs (InfTypUnbound (namel, _)) (InfTypUnbound (namer, _)) = false
+    | occurs (tyx as (InfTypUnbound _)) (InfTypFun (app, rest)) = occurs' tyx app orelse occurs' tyx rest
+    | occurs (tyx as (InfTypUnbound _)) (InfTypTuple typs) = List.exists (occurs' tyx) typs
+    | occurs (tyx as (InfTypUnbound _)) (InfTypRecord rows) = List.exists (fn (_, tyy) => occurs' tyx tyy) rows
+    | occurs tyx (tyy as (InfTypUnbound _)) = occurs tyy tyx
+    | occurs _ _ = false
 
   fun find (InfTypUnbound (name, rf)) =
       (case !rf of
@@ -72,33 +78,41 @@ structure Inferencer = struct
          | NONE => InfTypUnbound (name, rf))
     | find ty = ty
 
-  (* TODO: Some types are not handled, such as more advanced type constructors *)
+  (* TODO: Type constructors are a little bit trickier *)
   fun union tyx tyy =
       let val tyx = find tyx
           val tyy = find tyy
-      in
-          if occurs tyx tyy
-          then Err ("No such evil allowed", tyx, tyy)
-          else case (tyx, tyy) of
-                   (InfTypUnbound (name, rf), tyy) => (rf := SOME tyy; Ok ())
-                 | (tyx, InfTypUnbound (name, rf)) => (rf := SOME tyx; Ok ())
-                 | (InfTypConstr ([], [idl]), InfTypConstr ([], [idr])) =>
-                   if idl = idr
-                   then Ok ()
-                   else Err ("Different type constructors", tyx, tyy)
-                 | (InfTypFun (appl,restl), InfTypFun (appr,restr)) =>
-                   Result.seq (Ok ()) [union appl appr, union restl restr]
-                 | (InfTypTuple typsl, InfTypTuple typsr) =>
-                   if List.length typsl <> List.length typsr
-                   then Err ("Different lengths in tuple types", tyx, tyy)
-                   else Result.seq (Ok ()) (List.map (fn (x, y) => union x y)
-                                                     (ListPair.zip (typsl, typsr)))
-                 | (InfTypRecord rowsl, InfTypRecord rowsr) =>
-                   if List.length rowsl <> List.length rowsr
-                   then Err ("Different lengths in tuple types", tyx, tyy)
-                   else Result.seq (Ok ()) (List.map (fn ((nx,tx), (ny,ty)) =>
-                                                         if nx = ny then union tx ty else Err ("Record field names did not match", tyx, tyy))
-                                                     (ListPair.zip (rowsl, rowsr)))
-                 | _ => Err ("Unhandled union/Wrong type", tyx, tyy)
+      in case (tyx, tyy) of
+             (InfTypUnbound (name, rf), tyy) =>
+             if occurs tyx tyy
+             then Err ("No such recursive evil allowed", tyx, tyy)
+             else (rf := SOME tyy; Ok ())
+           | (tyx, InfTypUnbound (name, rf)) => union tyy tyx
+           | (InfTypConstr (varsl, idsl), InfTypConstr (varsr, idsr)) =>
+             if List.length varsl = List.length varsr andalso
+                List.length idsl = List.length idsr   andalso
+                Result.isOk (Result.seq (Ok ())
+                                        (ListPair.map
+                                             (fn (x,y) => union x y)
+                                             (varsl, varsr))) andalso
+                ListPair.all (op =) (idsl, idsr)
+             then Ok ()
+             else Err ("Different type constructors", tyx, tyy)
+           | (InfTypFun (appl, restl), InfTypFun (appr, restr)) =>
+             Result.seq (Ok ()) [union appl appr, union restl restr]
+           | (InfTypTuple typsl, InfTypTuple typsr) =>
+             if List.length typsl <> List.length typsr
+             then Err ("Different lengths in tuple types", tyx, tyy)
+             else Result.seq (Ok ()) (List.map (fn (x, y) => union x y)
+                                               (ListPair.zip (typsl, typsr)))
+           | (InfTypRecord rowsl, InfTypRecord rowsr) =>
+             if List.length rowsl <> List.length rowsr
+             then Err ("Different number of fields in record types", tyx, tyy)
+             else Result.seq (Ok ()) (List.map (fn ((nx,tx), (ny,ty)) =>
+                                                   if nx = ny
+                                                   then union tx ty
+                                                   else Err ("Record field names did not match", tyx, tyy))
+                                               (ListPair.zip (rowsl, rowsr)))
+           | _ => Err ("Unhandled union/Wrong type", tyx, tyy)
       end
 end

@@ -162,5 +162,40 @@ structure Inferencer = struct
               Ok () => TyExpList (exps, InfTypConstr ([ty], ["list"]))
             | Err err => raise InferenceUnionErr err
       end
+    | inferExp (P.ExpTuple exps, ctx) =
+      let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
+          val tys = List.map getExpTyp exps
+      in
+          TyExpTuple (exps, InfTypTuple tys)
+      end
+    | inferExp (P.ExpSeq exps, ctx) =
+      let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
+          val ty = getExpTyp (List.last exps)
+      in
+          TyExpSeq (exps, ty)
+      end
+    | inferExp (P.ExpRecord rows, ctx) =
+      let val rows = List.map (fn (n, ex) => (n, inferExp (ex, ctx))) rows
+          val rowtys = List.map (fn (n, ex) => (n, getExpTyp ex)) rows
+      in
+          TyExpRecord (rows, InfTypRecord rowtys)
+      end
     | inferExp (exp, _) = (TyExpCon (ConInt 5, InfTypConstr ([], ["none"])))
+
+(*| TyExpApp of typ_exp list * inf_typ
+ | TyExpInfixApp of typ_exp * string * typ_exp * inf_typ
+ | TyExpTuple of typ_exp list * inf_typ
+ | TyExpRecord of (string * typ_exp) list * inf_typ
+ | TyExpRecordSelect of string * inf_typ
+ | TyExpList of typ_exp list * inf_typ
+ | TyExpSeq of typ_exp list * inf_typ
+ | TyExpLocalDecl of typ_decl * typ_exp list * inf_typ
+ | TyExpConj of typ_exp * typ_exp * inf_typ
+ | TyExpDisj of typ_exp * typ_exp * inf_typ
+ | TyExpExceptionRaise of typ_exp * inf_typ
+ | TyExpExceptionHandle of typ_exp * (typ_pat * typ_exp) list * inf_typ
+ | TyExpCond of typ_exp * typ_exp * typ_exp * inf_typ
+ | TyExpIter of typ_exp * typ_exp * inf_typ
+ | TyExpMatch of typ_exp * (typ_pat * typ_exp) list * inf_typ
+ | TyExpFn of (typ_pat * typ_exp) list * inf_typ*)
 end

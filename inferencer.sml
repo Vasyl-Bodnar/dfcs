@@ -8,12 +8,12 @@ structure Inferencer = struct
           | TyPatCon of con * inf_typ
           | TyPatConstr of bool * longid * typ_pat option * inf_typ
           | TyPatInfixApp of typ_pat * (string *typ_pat) list * inf_typ
-          | TyPatTuple of typ_pat list * typ_pat
-          | TyPatLayered of bool * string * inf_typ * typ_pat
-          | TyPatRecord of rec_entry_typ_pat list * typ_pat
-          | TyPatList of typ_pat list * typ_pat
-  and rec_entry_typ_pat = TyPatRecordEntryA of string * typ_pat * typ_pat
-                        | TyPatRecordEntryB of string * typ_pat option * typ_pat
+          | TyPatTuple of typ_pat list * inf_typ
+          | TyPatLayered of bool * string * inf_typ * inf_typ
+          | TyPatRecord of rec_entry_typ_pat list * inf_typ
+          | TyPatList of typ_pat list * inf_typ
+  and rec_entry_typ_pat = TyPatRecordEntryA of string * typ_pat * inf_typ
+                        | TyPatRecordEntryB of string * typ_pat option * inf_typ
   and inf_typ = InfTypUnbound of string * inf_typ option ref
           | InfTypConstr of inf_typ list * longid
           | InfTypFun of inf_typ * inf_typ
@@ -59,6 +59,7 @@ structure Inferencer = struct
           | TyExpFn of (typ_pat * typ_exp) list * inf_typ
 
   exception InferenceUnionErr of string * inf_typ * inf_typ
+  exception InferenceErr of string
 
   val globalCount = ref 0
   fun gensym () =
@@ -154,6 +155,21 @@ structure Inferencer = struct
       (case HashArray.sub (env, String.concatWith "." lid) of
            SOME ty => TyExpValId (b, lid, ty)
          | NONE => TyExpValId (b, lid, InfTypUnbound (gensym (), ref NONE)))
+    | inferExp (P.ExpApp exps, {env, fenv}) = raise InferenceErr "Unhandled"
+    | inferExp (P.ExpInfixApp (expl, opr, expr), {env, fenv}) = raise InferenceErr "Unhandled"
+    | inferExp (P.ExpTuple exps, ctx) =
+      let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
+          val tys = List.map getExpTyp exps
+      in
+          TyExpTuple (exps, InfTypTuple tys)
+      end
+    | inferExp (P.ExpRecord rows, ctx) =
+      let val rows = List.map (fn (n, ex) => (n, inferExp (ex, ctx))) rows
+          val rowtys = List.map (fn (n, ex) => (n, getExpTyp ex)) rows
+      in
+          TyExpRecord (rows, InfTypRecord rowtys)
+      end
+    | inferExp (P.ExpRecordSelect s, ctx) = raise InferenceErr "Unhandled (Makes no sense alone)"
     | inferExp (P.ExpList exps, ctx) =
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val exps = List.map (fn ex => inferExp (ex, ctx)) exps
@@ -162,40 +178,29 @@ structure Inferencer = struct
               Ok () => TyExpList (exps, InfTypConstr ([ty], ["list"]))
             | Err err => raise InferenceUnionErr err
       end
-    | inferExp (P.ExpTuple exps, ctx) =
-      let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
-          val tys = List.map getExpTyp exps
-      in
-          TyExpTuple (exps, InfTypTuple tys)
-      end
     | inferExp (P.ExpSeq exps, ctx) =
       let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
           val ty = getExpTyp (List.last exps)
       in
           TyExpSeq (exps, ty)
       end
-    | inferExp (P.ExpRecord rows, ctx) =
-      let val rows = List.map (fn (n, ex) => (n, inferExp (ex, ctx))) rows
-          val rowtys = List.map (fn (n, ex) => (n, getExpTyp ex)) rows
+    | inferExp (P.ExpLocalDecl (decl, exps), ctx) =
+      let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
+          val ty = getExpTyp (List.last exps)
+          val decl = inferDecl (decl, ctx)
       in
-          TyExpRecord (rows, InfTypRecord rowtys)
+          TyExpLocalDecl (decl, exps, ty)
       end
+    | inferExp (P.ExpConj (expl, expr), ctx) = TyExpConj (inferExp (expl, ctx), inferExp (expr, ctx), InfTypConstr ([], ["bool"]))
+    | inferExp (P.ExpDisj (expl, expr), ctx) = TyExpDisj (inferExp (expl, ctx), inferExp (expr, ctx), InfTypConstr ([], ["bool"]))
+    | inferExp (P.ExpExceptionRaise _, ctx) = raise InferenceErr "Unhandled raise (Tricky)"
+    | inferExp (P.ExpExceptionHandle _, ctx) = raise InferenceErr "Unhandled handle (Tricky)"
+    | inferExp (P.ExpCond _, ctx) = raise InferenceErr "Unhandled if (Tricky)"
+    | inferExp (P.ExpIter (cond, exp), ctx) = TyExpIter (inferExp (cond, ctx), inferExp (exp, ctx), InfTypTuple [])
+    | inferExp (P.ExpMatch _, ctx) = raise InferenceErr "Unhandled case...of (Tricky)"])
+    | inferExp (P.ExpFn _, ctx) = raise InferenceErr "Unhandled fn...|...| (Tricky)"
     | inferExp (exp, _) = (TyExpCon (ConInt 5, InfTypConstr ([], ["none"])))
 
-(*| TyExpApp of typ_exp list * inf_typ
- | TyExpInfixApp of typ_exp * string * typ_exp * inf_typ
- | TyExpTuple of typ_exp list * inf_typ
- | TyExpRecord of (string * typ_exp) list * inf_typ
- | TyExpRecordSelect of string * inf_typ
- | TyExpList of typ_exp list * inf_typ
- | TyExpSeq of typ_exp list * inf_typ
- | TyExpLocalDecl of typ_decl * typ_exp list * inf_typ
- | TyExpConj of typ_exp * typ_exp * inf_typ
- | TyExpDisj of typ_exp * typ_exp * inf_typ
- | TyExpExceptionRaise of typ_exp * inf_typ
- | TyExpExceptionHandle of typ_exp * (typ_pat * typ_exp) list * inf_typ
- | TyExpCond of typ_exp * typ_exp * typ_exp * inf_typ
- | TyExpIter of typ_exp * typ_exp * inf_typ
- | TyExpMatch of typ_exp * (typ_pat * typ_exp) list * inf_typ
- | TyExpFn of (typ_pat * typ_exp) list * inf_typ*)
+  and inferDecl (_, _) = TyDeclSeq []
+  and inferPat (_, _) = TyDeclSeq []
 end

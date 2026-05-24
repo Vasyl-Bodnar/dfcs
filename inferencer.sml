@@ -3,8 +3,9 @@ structure Inferencer = struct
   datatype con = datatype P.con
   type longid = P.longid
 
-  datatype ctx = Ctx of {fenv: (string list * inf_typ) HashArray.hash list, env: inf_typ HashArray.hash list}
-  and typ_pat = PatWildcard
+  type ctx = {fenv: (string list * inf_typ) HashArray.hash list, env: inf_typ HashArray.hash list}
+
+  datatype typ_pat = TyPatWildcard
           | TyPatCon of con * inf_typ
           | TyPatConstr of bool * longid * typ_pat option * inf_typ
           | TyPatInfixApp of typ_pat * (string *typ_pat) list * inf_typ
@@ -19,6 +20,7 @@ structure Inferencer = struct
           | InfTypFun of inf_typ * inf_typ
           | InfTypTuple of inf_typ list
           | InfTypRecord of (string * inf_typ) list
+          | InfTypNever (* Does not return i.e. exceptions / Type that does not matter i.e. pat wildcard *)
   and typ_decl = TyDeclVal of string list * (bool * typ_pat * typ_exp) list
            | TyDeclFun of string list * typ_decl_fun list
            | TyDeclTyp of (string list * string * inf_typ) list
@@ -68,6 +70,15 @@ structure Inferencer = struct
           Int.toString ret
       end
 
+  fun getPatTyp TyPatWildcard = InfTypNever
+    | getPatTyp (TyPatCon (_, ty)) = ty
+    | getPatTyp (TyPatConstr (_, _, _, ty)) = ty
+    | getPatTyp (TyPatInfixApp (_, _, ty)) = ty
+    | getPatTyp (TyPatTuple (_, ty)) = ty
+    | getPatTyp (TyPatLayered (_, _, _, ty)) = ty
+    | getPatTyp (TyPatRecord (_, ty)) = ty
+    | getPatTyp (TyPatList (_, ty)) = ty
+
   fun getExpTyp (TyExpCon (_, ty)) = ty
     | getExpTyp (TyExpValId (_, _, ty)) = ty
     | getExpTyp (TyExpApp (_, ty)) = ty
@@ -113,7 +124,9 @@ structure Inferencer = struct
       let val tyx = find tyx
           val tyy = find tyy
       in case (tyx, tyy) of
-             (InfTypUnbound (name, rf), tyy) =>
+             (tyx, InfTypNever) => Ok ()
+           | (InfTypNever, tyy) => Ok ()
+           | (InfTypUnbound (name, rf), tyy) =>
              if occurs tyx tyy
              then Err ("No such recursive evil allowed", tyx, tyy)
              else (rf := SOME tyy; Ok ())
@@ -146,7 +159,29 @@ structure Inferencer = struct
            | _ => Err ("Unhandled union/Wrong type", tyx, tyy)
       end
 
-  fun inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], ["int"]))
+  fun inferPat (_, _) = TyPatWildcard
+
+  and inferMatches (matches : (P.pat * P.exp) list, ctx) : (typ_pat * typ_exp) list * inf_typ =
+      let val pat_ty = InfTypUnbound (gensym (), ref NONE)
+          val exp_ty = InfTypUnbound (gensym (), ref NONE)
+          val matches = List.map (fn (pa, ex) =>
+                                     (inferPat (pa, ctx),
+                                      inferExp (ex, ctx))) matches
+          val res = Result.seq (Ok ())
+                               (List.map (fn (pa, ex) =>
+                                             let val pa_ty = getPatTyp pa
+                                                 val ex_ty = getExpTyp ex
+                                             in Result.seq (Ok ()) [union pat_ty pa_ty,
+                                                                    union exp_ty ex_ty]
+                                             end) matches)
+      in
+          case res of
+              Ok () => ()
+            | Err err => raise InferenceUnionErr err;
+          (matches, exp_ty)
+      end
+
+  and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], ["int"]))
     | inferExp (P.ExpCon (P.ConString x), _) = TyExpCon (ConString x, InfTypConstr ([], ["string"]))
     | inferExp (P.ExpCon (P.ConChar x), _) = TyExpCon (ConChar x, InfTypConstr ([], ["char"]))
     | inferExp (P.ExpCon (P.ConWord x), _) = TyExpCon (ConWord x, InfTypConstr ([], ["word"]))
@@ -193,14 +228,30 @@ structure Inferencer = struct
       end
     | inferExp (P.ExpConj (expl, expr), ctx) = TyExpConj (inferExp (expl, ctx), inferExp (expr, ctx), InfTypConstr ([], ["bool"]))
     | inferExp (P.ExpDisj (expl, expr), ctx) = TyExpDisj (inferExp (expl, ctx), inferExp (expr, ctx), InfTypConstr ([], ["bool"]))
-    | inferExp (P.ExpExceptionRaise _, ctx) = raise InferenceErr "Unhandled raise (Tricky)"
-    | inferExp (P.ExpExceptionHandle _, ctx) = raise InferenceErr "Unhandled handle (Tricky)"
-    | inferExp (P.ExpCond _, ctx) = raise InferenceErr "Unhandled if (Tricky)"
+    | inferExp (P.ExpExceptionRaise exp, ctx) = TyExpExceptionRaise (inferExp (exp, ctx), InfTypNever)
+    | inferExp (P.ExpExceptionHandle (exp, matches), ctx) = TyExpExceptionHandle (inferExp (exp, ctx), #1 (inferMatches (matches, ctx)), InfTypNever)
+    | inferExp (P.ExpCond (cond, expl, expr), ctx) =
+      let val cond = inferExp (cond, ctx)
+          val expl = inferExp (expl, ctx)
+          val expr = inferExp (expr, ctx)
+          val ty = InfTypUnbound (gensym (), ref NONE)
+      in
+          case Result.seq (Ok ()) (List.map (fn (a, b) => union a b)
+                                       [(getExpTyp cond, InfTypConstr ([], ["bool"])),
+                                        (getExpTyp expl, ty),
+                                        (getExpTyp expr, ty)])
+           of
+             Ok () => TyExpCond (cond, expl, expr, ty)
+           | Err err => raise InferenceUnionErr err
+      end
     | inferExp (P.ExpIter (cond, exp), ctx) = TyExpIter (inferExp (cond, ctx), inferExp (exp, ctx), InfTypTuple [])
-    | inferExp (P.ExpMatch _, ctx) = raise InferenceErr "Unhandled case...of (Tricky)"])
-    | inferExp (P.ExpFn _, ctx) = raise InferenceErr "Unhandled fn...|...| (Tricky)"
-    | inferExp (exp, _) = (TyExpCon (ConInt 5, InfTypConstr ([], ["none"])))
+    | inferExp (P.ExpMatch (exp, matches), ctx) =
+      let val (matches, ty) = inferMatches (matches, ctx)
+      in
+          TyExpMatch (inferExp (exp, ctx), matches, ty)
+      end
+    | inferExp (P.ExpFn matches, ctx) = TyExpFn (inferMatches (matches, ctx))
+    | inferExp (P.ExpTypeAnnote _, ctx) = raise InferenceErr "Impossible (Annoted Type in Inferencer)"
 
   and inferDecl (_, _) = TyDeclSeq []
-  and inferPat (_, _) = TyDeclSeq []
 end

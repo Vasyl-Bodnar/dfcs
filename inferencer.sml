@@ -3,8 +3,6 @@ structure Inferencer = struct
   datatype con = datatype P.con
   type longid = P.longid
 
-  type ctx = {fenv: (string list * inf_typ) HashArray.hash list, env: inf_typ HashArray.hash list}
-
   datatype typ_pat = TyPatWildcard
           | TyPatCon of con * inf_typ
           | TyPatConstr of bool * longid * typ_pat option * inf_typ
@@ -20,6 +18,7 @@ structure Inferencer = struct
           | InfTypFun of inf_typ * inf_typ
           | InfTypTuple of inf_typ list
           | InfTypRecord of (string * inf_typ) list
+          | InfTypPoly of string list * inf_typ
           | InfTypNever (* Does not return i.e. exceptions / Type that does not matter i.e. pat wildcard *)
   and typ_decl = TyDeclVal of string list * (bool * typ_pat * typ_exp) list
            | TyDeclFun of string list * typ_decl_fun list
@@ -60,6 +59,8 @@ structure Inferencer = struct
           | TyExpMatch of typ_exp * (typ_pat * typ_exp) list * inf_typ
           | TyExpFn of (typ_pat * typ_exp) list * inf_typ
 
+  type ctx = {env: (string list * inf_typ) HashArray.hash list}
+
   exception InferenceUnionErr of string * inf_typ * inf_typ
   exception InferenceErr of string
 
@@ -98,6 +99,9 @@ structure Inferencer = struct
     | getExpTyp (TyExpMatch (_, _, ty)) = ty
     | getExpTyp (TyExpFn (_, ty)) = ty
 
+  fun getFunTyp (InfTypFun (_, ty)) = getFunTyp ty
+    | getFunTyp ty = ty
+
   fun occurs' (InfTypUnbound (namel, _)) (InfTypUnbound (namer, _)) = namel = namer
     | occurs' (tyx as (InfTypUnbound _)) (InfTypFun (app, rest)) = occurs' tyx app orelse occurs' tyx rest
     | occurs' (tyx as (InfTypUnbound _)) (InfTypTuple typs) = List.exists (occurs' tyx) typs
@@ -114,12 +118,15 @@ structure Inferencer = struct
 
   fun find (InfTypUnbound (name, rf)) =
       (case !rf of
-           SOME ty => ty
+           SOME (ty as InfTypUnbound _) =>
+           let val res = find ty
+           in rf := SOME res; res
+           end
+         | SOME ty => ty
          | NONE => InfTypUnbound (name, rf))
     | find ty = ty
 
-  (* TODO: Type constructors are a little bit trickier
-           Path compression (just a separate case for Unbound basically) *)
+  (* TODO: Instantiate future polymorphic types too *)
   fun union tyx tyy =
       let val tyx = find tyx
           val tyy = find tyy
@@ -186,12 +193,38 @@ structure Inferencer = struct
     | inferExp (P.ExpCon (P.ConChar x), _) = TyExpCon (ConChar x, InfTypConstr ([], ["char"]))
     | inferExp (P.ExpCon (P.ConWord x), _) = TyExpCon (ConWord x, InfTypConstr ([], ["word"]))
     | inferExp (P.ExpCon (P.ConReal x), _) = TyExpCon (ConReal x, InfTypConstr ([], ["real"]))
-    | inferExp (P.ExpValId (b, lid), {env, fenv}) =
+    | inferExp (P.ExpValId (b, lid), {env}) =
       (case HashArray.sub (env, String.concatWith "." lid) of
-           SOME ty => TyExpValId (b, lid, ty)
-         | NONE => TyExpValId (b, lid, InfTypUnbound (gensym (), ref NONE)))
-    | inferExp (P.ExpApp exps, {env, fenv}) = raise InferenceErr "Unhandled"
-    | inferExp (P.ExpInfixApp (expl, opr, expr), {env, fenv}) = raise InferenceErr "Unhandled"
+           SOME ([], ty) => TyExpValId (b, lid, ty)
+         | SOME (vars, ty) => TyExpValId (b, lid, InfTypPoly (vars, ty))
+         | NONE => raise InferenceErr "Expected an existing variable")
+    | inferExp (P.ExpApp exps, ctx as {env}) =
+      let val ty = InfTypUnbound (gensym (), ref NONE)
+          val exps = List.rev (List.map (fn ex => inferExp (ex, ctx)) exps)
+      in case exps of
+             f::exps =>
+             let val fty = getExpTyp f
+                 val appty = List.foldr (fn (ex, acc) => InfTypFun (getExpTyp ex, acc)) ty exps
+             in case union fty appty of
+                    Ok () => TyExpApp (f::exps, ty)
+                  | Err err => raise InferenceUnionErr err
+             end
+           | [] => raise InferenceErr "Empty Application is impossible"
+      end
+    | inferExp (P.ExpInfixApp (expl, opr, expr), ctx as {env}) =
+      let val ty = InfTypUnbound (gensym (), ref NONE)
+          val expl = inferExp (expl, ctx)
+          val expr = inferExp (expr, ctx)
+      in case HashArray.sub (env, opr) of
+             SOME (vars, fty) => (* TODO: Instantiate future polymorphic types too *)
+             let val tyl = getExpTyp expl
+                 val tyr = getExpTyp expr
+             in case (union fty (InfTypFun (tyl, InfTypFun (tyr, ty)))) of
+                    Ok () => TyExpInfixApp (expl, opr, expr, ty)
+                  | Err err => raise InferenceUnionErr err
+             end
+           | NONE => raise InferenceErr "Expected an existing variable"
+      end
     | inferExp (P.ExpTuple exps, ctx) =
       let val exps = List.map (fn ex => inferExp (ex, ctx)) exps
           val tys = List.map getExpTyp exps

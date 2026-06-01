@@ -6,9 +6,9 @@ structure Inferencer = struct
   datatype typ_pat = TyPatWildcard
           | TyPatCon of con * inf_typ
           | TyPatConstr of bool * longid * typ_pat option * inf_typ
-          | TyPatInfixApp of typ_pat * (string *typ_pat) list * inf_typ
+          | TyPatInfixApp of typ_pat * (string * typ_pat) list * inf_typ
           | TyPatTuple of typ_pat list * inf_typ
-          | TyPatLayered of bool * string * inf_typ * inf_typ
+          | TyPatLayered of bool * string * typ_pat * inf_typ
           | TyPatRecord of rec_entry_typ_pat list * inf_typ
           | TyPatList of typ_pat list * inf_typ
   and rec_entry_typ_pat = TyPatRecordEntryA of string * typ_pat * inf_typ
@@ -70,6 +70,12 @@ structure Inferencer = struct
           globalCount := !globalCount + 1;
           Int.toString ret
       end
+
+  fun makeInfTyp (P.TypVar str) = InfTypUnbound (str, ref NONE)
+    | makeInfTyp (P.TypConstr (vars, lid)) = InfTypConstr (List.map makeInfTyp vars, lid)
+    | makeInfTyp (P.TypFun (tyl, tyr)) = InfTypFun (makeInfTyp tyl, makeInfTyp tyr)
+    | makeInfTyp (P.TypTuple typs) = InfTypTuple (List.map makeInfTyp typs)
+    | makeInfTyp (P.TypRecord rows) = InfTypRecord (List.map (fn (s, ty) => (s, makeInfTyp ty)) rows)
 
   fun getPatTyp TyPatWildcard = InfTypNever
     | getPatTyp (TyPatCon (_, ty)) = ty
@@ -172,11 +178,6 @@ structure Inferencer = struct
     | inferPat (P.PatCon (P.ConChar x), _) = TyPatCon (ConChar x, InfTypConstr ([], ["char"]))
     | inferPat (P.PatCon (P.ConWord x), _) = TyPatCon (ConWord x, InfTypConstr ([], ["word"]))
     | inferPat (P.PatCon (P.ConReal x), _) = TyPatCon (ConReal x, InfTypConstr ([], ["real"]))
-    | inferPat (P.PatConstr (b, lid, NONE), ctx as {env}) =
-      (case HashArray.sub (env, String.concatWith "." lid) of
-           SOME ([], ty) => TyPatConstr (b, lid, NONE, ty)
-         | SOME (vars, ty) => TyPatConstr (b, lid, NONE, InfTypPoly (vars, ty))
-         | NONE => raise InferenceErr "Expected an existing variable for pattern constructor")
     | inferPat (P.PatConstr (b, lid, SOME pat), ctx as {env}) =
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val f = inferPat (P.PatConstr (b, lid, NONE), ctx)
@@ -187,15 +188,65 @@ structure Inferencer = struct
              Ok () => TyPatConstr (b, lid, SOME pat, ty)
            | Err err => raise InferenceUnionErr err
       end
-    | inferPat (P.PatInfixApp (pat, pats), ctx) = raise InferenceErr "TODO: Infix Patterns"
+    | inferPat (P.PatConstr (b, lid, NONE), ctx as {env}) =
+      (case HashArray.sub (env, String.concatWith "." lid) of
+           SOME ([], ty) => TyPatConstr (b, lid, NONE, ty)
+         | SOME (vars, ty) => TyPatConstr (b, lid, NONE, InfTypPoly (vars, ty))
+         | NONE => raise InferenceErr "Expected an existing variable for pattern constructor")
+    | inferPat (P.PatInfixApp (pat, pats), ctx) = raise InferenceErr "TODO: Infix Patterns are complex"
     | inferPat (P.PatTuple pats, ctx) =
       let val pats = List.map (fn pat => inferPat (pat, ctx)) pats
           val tys = List.map getPatTyp pats
       in
           TyPatTuple (pats, InfTypTuple tys)
       end
-    | inferPat (P.PatLayered (b, id, typ, pat), ctx) = raise InferenceErr "TODO: Layered Patterns"
-    | inferPat (P.PatRecord entries, ctx) = raise InferenceErr "TODO: Record Patterns"
+    | inferPat (P.PatLayered (b, id, SOME typ, pat), ctx) =
+      let val ty = makeInfTyp typ
+          val pat = inferPat (pat, ctx)
+          val patty = getPatTyp pat
+      in case union ty patty of
+             Ok () => TyPatLayered (b, id, pat, ty)
+           | Err err => raise InferenceUnionErr err
+      end
+    | inferPat (P.PatLayered (b, id, NONE, pat), ctx) =
+      let val ty = InfTypUnbound (gensym (), ref NONE)
+          val pat = inferPat (pat, ctx)
+          val patty = getPatTyp pat
+      in case union ty patty of
+             Ok () => TyPatLayered (b, id, pat, ty)
+           | Err err => raise InferenceUnionErr err
+      end
+    | inferPat (P.PatRecord entries, ctx) =
+      let val entries =
+              List.map (fn P.PatRecordEntryA (lab, pat) =>
+                           let val pat = inferPat (pat, ctx)
+                           in TyPatRecordEntryA (lab, pat, getPatTyp pat)
+                           end
+                       | P.PatRecordEntryB (id, SOME typ, SOME pat) =>
+                         let val ty = makeInfTyp typ
+                             val pat = inferPat (pat, ctx)
+                         in case union ty (getPatTyp pat) of
+                                Ok () => TyPatRecordEntryB (id, SOME pat, ty)
+                              | Err err => raise InferenceUnionErr err
+                         end
+                       | P.PatRecordEntryB (id, SOME typ, NONE) =>
+                         TyPatRecordEntryB (id, NONE, makeInfTyp typ)
+                       | P.PatRecordEntryB (id, NONE, SOME pat) =>
+                         let val ty = InfTypUnbound (gensym (), ref NONE)
+                             val pat = inferPat (pat, ctx)
+                         in case union ty (getPatTyp pat) of
+                                Ok () => TyPatRecordEntryB (id, SOME pat, ty)
+                              | Err err => raise InferenceUnionErr err
+                         end
+                       | P.PatRecordEntryB (id, NONE, NONE) =>
+                         TyPatRecordEntryB (id, NONE, InfTypUnbound (gensym (), ref NONE)))
+                       entries
+          val typs = List.map (fn TyPatRecordEntryA (lab, _, ty) => (lab, ty)
+                              | TyPatRecordEntryB (id, _, ty) => (id, ty))
+                              entries
+      in
+          TyPatRecord (entries, InfTypRecord typs)
+      end
     | inferPat (P.PatList pats, ctx) =
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val pats = List.map (fn pat => inferPat (pat, ctx)) pats
@@ -203,7 +254,13 @@ structure Inferencer = struct
               Ok () => TyPatList (pats, InfTypConstr ([ty], ["list"]))
             | Err err => raise InferenceUnionErr err
       end
-    | inferPat (_, ctx) = raise InferenceErr "TODO: Unhandled pattern inference"
+    | inferPat (P.PatTypeAnnote (pat, typ), ctx) =
+      let val pat = inferPat (pat, ctx)
+          val ty = getPatTyp pat
+      in case union ty (makeInfTyp typ) of
+             Ok () => pat
+           | Err err => raise InferenceUnionErr err
+      end
 
   and inferMatches (matches : (P.pat * P.exp) list, ctx) : (typ_pat * typ_exp) list * inf_typ =
       let val pat_ty = InfTypUnbound (gensym (), ref NONE)
@@ -318,7 +375,13 @@ structure Inferencer = struct
           TyExpMatch (inferExp (exp, ctx), matches, ty)
       end
     | inferExp (P.ExpFn matches, ctx) = TyExpFn (inferMatches (matches, ctx))
-    | inferExp (P.ExpTypeAnnote _, ctx) = raise InferenceErr "Impossible (Annoted Type in Inferencer)"
+    | inferExp (P.ExpTypeAnnote (exp, typ), ctx) =
+      let val exp = inferExp (exp, ctx)
+          val ty = getExpTyp exp
+      in case union ty (makeInfTyp typ) of
+             Ok () => exp
+           | Err err => raise InferenceUnionErr err
+      end
 
   and inferDecl (_, _) = TyDeclSeq []
 end

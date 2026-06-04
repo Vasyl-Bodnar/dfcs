@@ -178,22 +178,6 @@ structure Inferencer = struct
     | inferPat (P.PatCon (P.ConChar x), _) = TyPatCon (ConChar x, InfTypConstr ([], ["char"]))
     | inferPat (P.PatCon (P.ConWord x), _) = TyPatCon (ConWord x, InfTypConstr ([], ["word"]))
     | inferPat (P.PatCon (P.ConReal x), _) = TyPatCon (ConReal x, InfTypConstr ([], ["real"]))
-    | inferPat (P.PatConstr (b, lid, SOME pat), ctx as {env}) =
-      let val ty = InfTypUnbound (gensym (), ref NONE)
-          val f = inferPat (P.PatConstr (b, lid, NONE), ctx)
-          val pat = inferPat (pat, ctx)
-          val fty = getPatTyp f
-          val appty = InfTypFun (getPatTyp pat, ty)
-      in case union fty appty of
-             Ok () => TyPatConstr (b, lid, SOME pat, ty)
-           | Err err => raise InferenceUnionErr err
-      end
-    | inferPat (P.PatConstr (b, lid, NONE), ctx as {env}) =
-      (case HashArray.sub (env, String.concatWith "." lid) of
-           SOME ([], ty) => TyPatConstr (b, lid, NONE, ty)
-         | SOME (vars, ty) => TyPatConstr (b, lid, NONE, InfTypPoly (vars, ty))
-         | NONE => raise InferenceErr "Expected an existing variable for pattern constructor")
-    | inferPat (P.PatInfixApp (pat, pats), ctx) = raise InferenceErr "TODO: Infix Patterns are complex"
     | inferPat (P.PatTuple pats, ctx) =
       let val pats = List.map (fn pat => inferPat (pat, ctx)) pats
           val tys = List.map getPatTyp pats
@@ -261,6 +245,7 @@ structure Inferencer = struct
              Ok () => pat
            | Err err => raise InferenceUnionErr err
       end
+    | inferPat (_, ctx) = raise InferenceErr "TODO: app, infix, id"
 
   and inferMatches (matches : (P.pat * P.exp) list, ctx) : (typ_pat * typ_exp) list * inf_typ =
       let val pat_ty = InfTypUnbound (gensym (), ref NONE)

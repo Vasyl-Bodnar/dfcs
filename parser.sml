@@ -10,8 +10,9 @@ structure Parser = struct
   type longid = string list
   datatype pat = PatWildcard
           | PatCon of con
-          | PatConstr of bool * longid * pat option
-          | PatInfixApp of pat * (string * pat) list
+          | PatId of bool * longid
+          | PatApp of pat list
+          | PatInfixApp of pat * string * pat
           | PatTuple of pat list
           | PatLayered of bool * string * typ option * pat
           | PatRecord of rec_entry_pat list
@@ -370,45 +371,41 @@ structure Parser = struct
               map PatRecord (listBetween (ch #"{") coreRecordEntryPat many #"," (ch #"}")),
               map PatList (listBetween (ch #"[") corePat many #"," (ch #"]"))]) ctx
 
-  and coreConstrPat ctx =
-      memoizePat "coreConstrPat"
-      (choose [map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, ignoreLeft space (map SOME coreATPat))),
-              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId, const NONE)),
-              coreATPat]) ctx
+  and coreIdPat ctx =
+      memoizePat "coreIdPat"
+      (choose [map PatId (chain2 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreLongId)),
+               coreATPat]) ctx
 
-  and coreInfixPat ctx =
-      memoizePat "coreInfixPat"
-      (choose [map PatInfixApp
-                         (chain2 (coreConstrPat, some (chain2 (ignoreLeft space coreId, ignoreLeft space coreConstrPat)))),
-              coreConstrPat]) ctx
+  and coreAppPat ctx =
+      memoizePat "coreAppPat"
+      (choose [map PatApp (map List.concat (chain [chain [coreIdPat], some (ignoreLeft space coreIdPat)])),
+              coreIdPat]) ctx
 
   and coreTypeAnnotePat ctx =
       memoizePat "coreTypeAnnotePat"
-      (choose [map PatTypeAnnote (chain2 (ignoreRight coreInfixPat (spacedCh #":"), coreTyp)),
-              coreInfixPat]) ctx
+      (choose [map PatTypeAnnote (chain2 (ignoreRight coreAppPat (spacedCh #":"), coreTyp)),
+              coreAppPat]) ctx
 
   and corePat ctx =
       memoizePat "corePat"
       (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) corePat))),
               coreTypeAnnotePat]) ctx
 
-  and coreNonEqConstrPat ctx =
-      memoizePat "coreNonEqConstrPat"
-      (choose [map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId, ignoreLeft space (map SOME coreATPat))),
-              map PatConstr (chain3 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId, const NONE)),
-              coreATPat]) ctx
+  and coreNonEqIdPat ctx =
+      memoizePat "coreNonEqIdPat"
+      (choose [map PatId (chain2 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId)),
+               coreATPat]) ctx
 
-  and coreNonEqInfixPat ctx =
-      memoizePat "coreNonEqInfixPat"
-      (choose [map PatInfixApp
-                         (chain2 (coreNonEqConstrPat, some (chain2 (ignoreLeft space coreNonEqId, ignoreLeft space coreNonEqConstrPat)))),
-              coreNonEqConstrPat]) ctx
+  and coreNonEqAppPat ctx =
+      memoizePat "coreNonEqAppPat"
+      (choose [map PatApp (map List.concat (chain [chain [coreNonEqIdPat], some (ignoreLeft space coreNonEqIdPat)])),
+              coreNonEqIdPat]) ctx
 
   and coreNonEqTypeAnnotePat ctx =
       memoizePat "coreNonEqTypeAnnotePat"
       (choose [map PatTypeAnnote
-                         (chain2 (ignoreRight coreNonEqInfixPat (spacedCh #":"), coreTyp)),
-              coreNonEqInfixPat]) ctx
+                         (chain2 (ignoreRight coreNonEqAppPat (spacedCh #":"), coreTyp)),
+              coreNonEqAppPat]) ctx
 
   and coreNonEqPat ctx =
       memoizePat "coreNonEqPat"

@@ -5,7 +5,8 @@
 structure Elaborator = struct
   structure P = Parser
   exception IllegalElab of string
-  exception ImproperElabResult of P.exp list
+  exception ImproperElabResultExp of P.exp list
+  exception ImproperElabResultPat of P.pat list
 
   datatype ctx = Ctx of {htinfix: int HashArray.hash}
 
@@ -13,15 +14,72 @@ structure Elaborator = struct
   fun removeInfix id (Ctx {htinfix, ...}) = HashArray.delete (htinfix, id)
   fun addInfix fix id (Ctx {htinfix, ...}) = HashArray.update (htinfix, id, fix)
 
-  fun shuntingYardCombineOp (p, id) exps ctx opst (v::u::valst) =
+  fun shuntingYardCombineOpPat (p, id) pats ctx opst (v::u::valst) =
+      if p >= 0
+      then shuntingYardPat pats ctx opst ((P.PatInfixApp (u, id, v))::valst) false
+      else shuntingYardPat pats ctx opst ((P.PatInfixApp (v, id, u))::valst) false
+    | shuntingYardCombineOpPat (p, id) pats ctx opst ((P.PatApp (e::es))::valst) =
+      if p >= 0
+      then shuntingYardPat pats ctx opst ((P.PatInfixApp (P.PatApp es, id, e))::valst) false
+      else shuntingYardPat pats ctx opst ((P.PatInfixApp (e, id, P.PatApp es))::valst) false
+    | shuntingYardCombineOpPat (p, id) pats ctx opst _ = raise IllegalElab "Elaborator Error: Infix operator has no operands."
+
+  and shuntingYardCombinePat pat pats ctx opst (allvalst as ((P.PatApp es)::valst)) b =
+      if b
+      then shuntingYardPat pats ctx opst ((P.PatApp (pat::es))::valst) true
+      else shuntingYardPat pats ctx opst (pat::allvalst) true
+    | shuntingYardCombinePat pat pats ctx opst (allvalst as (e::valst)) b =
+      if b
+      then shuntingYardPat pats ctx opst ((P.PatApp (pat::[e]))::valst) true
+      else shuntingYardPat pats ctx opst (pat::allvalst) true
+    | shuntingYardCombinePat pat pats ctx opst [] b = shuntingYardPat pats ctx opst [pat] true
+
+  and shuntingYardPat [] ctx [] [v] _ = v
+    | shuntingYardPat [] ctx [] xs _ = raise ImproperElabResultPat xs
+    | shuntingYardPat [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOpPat (p, id) [] ctx opst valst
+    | shuntingYardPat ((pat as P.PatId (false, [id])) :: pats) ctx opst valst b =
+      (case checkInfix id ctx of
+          SOME pow => (case opst of
+                           [] => shuntingYardPat pats ctx [(pow,id)] valst false
+                         | ((p,i)::oprest) =>
+                           case (p < 0, pow < 0) of
+                               (true, true) => if pow <= p
+                                               then shuntingYardPat pats ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst
+                             | (false, false) => if pow >= p
+                                               then shuntingYardPat pats ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst
+                             | (true, false) => if pow = (~p - 1)
+                                               then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
+                                               else (if pow >= (~p - 1)
+                                               then shuntingYardPat pats ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst)
+                             | (false, true) => if (~pow - 1) = p
+                                               then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
+                                               else (if (~pow - 1) >= p
+                                               then shuntingYardPat pats ctx ((pow,id)::opst) valst false
+                                               else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst))
+        | NONE => shuntingYardCombinePat pat pats ctx opst valst b)
+    | shuntingYardPat ((pat as P.PatId (true, [id])) :: pats) ctx opst valst b =
+      (case checkInfix id ctx of
+           SOME _ => shuntingYardCombinePat pat pats ctx opst valst b
+         | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
+    | shuntingYardPat ((pat as P.PatId (true, _)) :: pats) ctx opst valst b = raise IllegalElab "Elaborator Error: `op` applied to a nonfix value construct. Constructs cannot be infixed (e.g. Module.+ has to be nonfix)"
+    | shuntingYardPat (pat::pats) ctx opst valst true = shuntingYardCombinePat (elaboratePat (pat, ctx)) pats ctx opst valst true
+    | shuntingYardPat (pat::pats) ctx opst valst false = shuntingYardCombinePat (elaboratePat (pat, ctx)) pats ctx opst valst false
+
+  and elaboratePat (P.PatApp pats, ctx) = shuntingYardPat pats ctx [] [] false
+    | elaboratePat (ast, _) = ast
+
+  fun shuntingYardCombineOpExp (p, id) exps ctx opst (v::u::valst) =
       if p >= 0
       then shuntingYard exps ctx opst ((P.ExpInfixApp (u, id, v))::valst) false
       else shuntingYard exps ctx opst ((P.ExpInfixApp (v, id, u))::valst) false
-    | shuntingYardCombineOp (p, id) exps ctx opst ((P.ExpApp (e::es))::valst) =
+    | shuntingYardCombineOpExp (p, id) exps ctx opst ((P.ExpApp (e::es))::valst) =
       if p >= 0
       then shuntingYard exps ctx opst ((P.ExpInfixApp (P.ExpApp es, id, e))::valst) false
       else shuntingYard exps ctx opst ((P.ExpInfixApp (e, id, P.ExpApp es))::valst) false
-    | shuntingYardCombineOp (p, id) exps ctx opst _ = raise IllegalElab "Elaborator Error: Infix operator has no operands."
+    | shuntingYardCombineOpExp (p, id) exps ctx opst _ = raise IllegalElab "Elaborator Error: Infix operator has no operands."
 
   and shuntingYardCombineExp exp exps ctx opst (allvalst as ((P.ExpApp es)::valst)) b =
       if b
@@ -34,8 +92,8 @@ structure Elaborator = struct
     | shuntingYardCombineExp exp exps ctx opst [] b = shuntingYard exps ctx opst [exp] true
 
   and shuntingYard [] ctx [] [v] _ = v
-    | shuntingYard [] ctx [] xs _ = raise ImproperElabResult xs
-    | shuntingYard [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOp (p, id) [] ctx opst valst
+    | shuntingYard [] ctx [] xs _ = raise ImproperElabResultExp xs
+    | shuntingYard [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOpExp (p, id) [] ctx opst valst
     | shuntingYard ((exp as P.ExpValId (false, [id])) :: exps) ctx opst valst b =
       (case checkInfix id ctx of
           SOME pow => (case opst of
@@ -44,20 +102,20 @@ structure Elaborator = struct
                            case (p < 0, pow < 0) of
                                (true, true) => if pow <= p
                                                then shuntingYard exps ctx ((pow,id)::opst) valst false
-                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst
+                                               else shuntingYardCombineOpExp (p, i) exps ctx ((pow,id)::oprest) valst
                              | (false, false) => if pow >= p
                                                then shuntingYard exps ctx ((pow,id)::opst) valst false
-                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst
+                                               else shuntingYardCombineOpExp (p, i) exps ctx ((pow,id)::oprest) valst
                              | (true, false) => if pow = (~p - 1)
                                                then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
                                                else (if pow >= (~p - 1)
                                                then shuntingYard exps ctx ((pow,id)::opst) valst false
-                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst)
+                                               else shuntingYardCombineOpExp (p, i) exps ctx ((pow,id)::oprest) valst)
                              | (false, true) => if (~pow - 1) = p
                                                then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
                                                else (if (~pow - 1) >= p
                                                then shuntingYard exps ctx ((pow,id)::opst) valst false
-                                               else shuntingYardCombineOp (p, i) exps ctx ((pow,id)::oprest) valst))
+                                               else shuntingYardCombineOpExp (p, i) exps ctx ((pow,id)::oprest) valst))
         | NONE => shuntingYardCombineExp exp exps ctx opst valst b)
     | shuntingYard ((exp as P.ExpValId (true, [id])) :: exps) ctx opst valst b =
       (case checkInfix id ctx of

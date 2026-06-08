@@ -51,12 +51,12 @@ structure Elaborator = struct
                                                else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst
                              | (true, false) => if pow = (~p - 1)
                                                then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
-                                               else (if pow >= (~p - 1)
+                                               else (if pow > (~p - 1)
                                                then shuntingYardPat pats ctx ((pow,id)::opst) valst false
                                                else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst)
                              | (false, true) => if (~pow - 1) = p
                                                then raise IllegalElab "Elaborator Error: Equal right and left associativity cannot be mixed together. E.g. a >> b << c or a << b >> c"
-                                               else (if (~pow - 1) >= p
+                                               else (if (~pow - 1) > p
                                                then shuntingYardPat pats ctx ((pow,id)::opst) valst false
                                                else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst))
         | NONE => shuntingYardCombinePat pat pats ctx opst valst b)

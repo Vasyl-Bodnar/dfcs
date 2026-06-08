@@ -5,8 +5,9 @@ structure Inferencer = struct
 
   datatype typ_pat = TyPatWildcard
           | TyPatCon of con * inf_typ
-          | TyPatConstr of bool * longid * typ_pat option * inf_typ
-          | TyPatInfixApp of typ_pat * (string * typ_pat) list * inf_typ
+          | TyPatId of bool * longid * inf_typ
+          | TyPatApp of typ_pat list * inf_typ
+          | TyPatInfixApp of typ_pat * string * typ_pat * inf_typ
           | TyPatTuple of typ_pat list * inf_typ
           | TyPatLayered of bool * string * typ_pat * inf_typ
           | TyPatRecord of rec_entry_typ_pat list * inf_typ
@@ -79,8 +80,9 @@ structure Inferencer = struct
 
   fun getPatTyp TyPatWildcard = InfTypNever
     | getPatTyp (TyPatCon (_, ty)) = ty
-    | getPatTyp (TyPatConstr (_, _, _, ty)) = ty
-    | getPatTyp (TyPatInfixApp (_, _, ty)) = ty
+    | getPatTyp (TyPatId (_, _, ty)) = ty
+    | getPatTyp (TyPatApp (_, ty)) = ty
+    | getPatTyp (TyPatInfixApp (_, _, _, ty)) = ty
     | getPatTyp (TyPatTuple (_, ty)) = ty
     | getPatTyp (TyPatLayered (_, _, _, ty)) = ty
     | getPatTyp (TyPatRecord (_, ty)) = ty
@@ -178,6 +180,38 @@ structure Inferencer = struct
     | inferPat (P.PatCon (P.ConChar x), _) = TyPatCon (ConChar x, InfTypConstr ([], ["char"]))
     | inferPat (P.PatCon (P.ConWord x), _) = TyPatCon (ConWord x, InfTypConstr ([], ["word"]))
     | inferPat (P.PatCon (P.ConReal x), _) = TyPatCon (ConReal x, InfTypConstr ([], ["real"]))
+    | inferPat (P.PatId (b, lid), {env}) =
+      (case HashArray.sub (env, String.concatWith "." lid) of
+           SOME ([], ty) => TyPatId (b, lid, ty)
+         | SOME (vars, ty) => TyPatId (b, lid, InfTypPoly (vars, ty))
+         | NONE => raise InferenceErr "Patected an existing variable for patression id")
+    | inferPat (P.PatApp pats, ctx as {env}) =
+      let val ty = InfTypUnbound (gensym (), ref NONE)
+          val pats = List.rev (List.map (fn ex => inferPat (ex, ctx)) pats)
+      in case pats of
+             f::pats =>
+             let val fty = getPatTyp f
+                 val appty = List.foldr (fn (ex, acc) => InfTypFun (getPatTyp ex, acc)) ty pats
+             in case union fty appty of
+                    Ok () => TyPatApp (f::pats, ty)
+                  | Err err => raise InferenceUnionErr err
+             end
+           | [] => raise InferenceErr "Empty Application is impossible"
+      end
+    | inferPat (P.PatInfixApp (patl, opr, patr), ctx as {env}) =
+      let val ty = InfTypUnbound (gensym (), ref NONE)
+          val patl = inferPat (patl, ctx)
+          val patr = inferPat (patr, ctx)
+      in case HashArray.sub (env, opr) of
+             SOME (vars, fty) => (* TODO: Instantiate future polymorphic types too *)
+             let val tyl = getPatTyp patl
+                 val tyr = getPatTyp patr
+             in case (union fty (InfTypFun (tyl, InfTypFun (tyr, ty)))) of
+                    Ok () => TyPatInfixApp (patl, opr, patr, ty)
+                  | Err err => raise InferenceUnionErr err
+             end
+           | NONE => raise InferenceErr "Patected an existing variable for infix patression"
+      end
     | inferPat (P.PatTuple pats, ctx) =
       let val pats = List.map (fn pat => inferPat (pat, ctx)) pats
           val tys = List.map getPatTyp pats

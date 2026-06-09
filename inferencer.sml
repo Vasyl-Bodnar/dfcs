@@ -14,7 +14,7 @@ structure Inferencer = struct
           | TyPatList of typ_pat list * inf_typ
   and rec_entry_typ_pat = TyPatRecordEntryA of string * typ_pat * inf_typ
                         | TyPatRecordEntryB of string * typ_pat option * inf_typ
-  and inf_typ = InfTypUnbound of string * inf_typ option ref
+  and inf_typ = InfTypUnbound of string * inf_typ option ref (* TODO: Wildcard might be better unbound rather than never *)
           | InfTypConstr of inf_typ list * longid
           | InfTypFun of inf_typ * inf_typ
           | InfTypTuple of inf_typ list
@@ -402,5 +402,34 @@ structure Inferencer = struct
            | Err err => raise InferenceUnionErr err
       end
 
-  and inferDecl (_, _) = TyDeclSeq []
+  and inferDecl (P.DeclVal (vars, vals), ctx) =
+      let val vals = List.map (fn (b, pat, exp) =>
+                                  let val pat = inferPat (pat, ctx)
+                                      val exp = inferExp (exp, ctx)
+                                  in case union (getPatTyp pat) (getExpTyp exp) of
+                                         Ok () => (b, pat, exp)
+                                       | Err err => raise InferenceUnionErr err
+                                  end) vals
+      in
+          TyDeclVal (vars, vals)
+      end
+    | inferDecl (P.DeclFun (vars, funs), ctx) =
+      let val funs = List.map (fn P.DeclFunNonfix fs => raise InferenceErr "Unhandled function declaration"
+                              | _ => raise InferenceErr "Unhandled function inference") funs
+      in
+          TyDeclFun (vars, funs)
+      end
+    | inferDecl (P.DeclTyp _, _) = raise InferenceErr "Unhandled `type` inference"
+    | inferDecl (P.DeclDataTyp (_, _), _) = raise InferenceErr "Unhandled datatype inference"
+    | inferDecl (P.DeclDataTypRepl (_, _), _) = raise InferenceErr "Unhandled datatype-repl inference"
+    | inferDecl (P.DeclAbsTyp (_, _, _), _) = raise InferenceErr "Unhandled abstype inference"
+    | inferDecl (P.DeclExc _, _) = raise InferenceErr "Unhandled exception inference"
+    | inferDecl (P.DeclSeq decls, ctx) = TyDeclSeq (List.map (fn dec => inferDecl (dec, ctx)) decls)
+    | inferDecl (P.DeclLocal (decl, decr), ctx) = TyDeclLocal (inferDecl (decl, ctx), inferDecl (decr, ctx))
+    | inferDecl (P.DeclOpen lids, _) = TyDeclOpen lids
+    | inferDecl (P.DeclNonfix ids, _) = TyDeclNonfix ids
+    | inferDecl (P.DeclInfix (dig, ids), _) = TyDeclInfix (dig, ids)
+    | inferDecl (P.DeclInfixR (dig, ids), _) =  TyDeclInfixR (dig, ids)
+    (* | inferDecl (TyDeclStruct _, _) = TODO: MODULES *)
+    | inferDecl (P.DeclEmpty, _) = TyDeclEmpty
 end

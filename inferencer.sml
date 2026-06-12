@@ -279,7 +279,6 @@ structure Inferencer = struct
              Ok () => pat
            | Err err => raise InferenceUnionErr err
       end
-    | inferPat (_, ctx) = raise InferenceErr "TODO: app, infix, id"
 
   and inferMatches (matches : (P.pat * P.exp) list, ctx) : (typ_pat * typ_exp) list * inf_typ =
       let val pat_ty = InfTypUnbound (gensym (), ref NONE)
@@ -419,11 +418,27 @@ structure Inferencer = struct
       in
           TyDeclFun (vars, funs)
       end
-    | inferDecl (P.DeclTyp _, _) = raise InferenceErr "Unhandled `type` inference"
-    | inferDecl (P.DeclDataTyp (_, _), _) = raise InferenceErr "Unhandled datatype inference"
-    | inferDecl (P.DeclDataTypRepl (_, _), _) = raise InferenceErr "Unhandled datatype-repl inference"
-    | inferDecl (P.DeclAbsTyp (_, _, _), _) = raise InferenceErr "Unhandled abstype inference"
-    | inferDecl (P.DeclExc _, _) = raise InferenceErr "Unhandled exception inference"
+    | inferDecl (P.DeclTyp typs, _) =
+      TyDeclTyp
+          (List.map (fn (vars, id, ty) => (vars, id, makeInfTyp ty)) typs)
+    | inferDecl (P.DeclDataTyp (data, typs), _) =
+      TyDeclDataTyp
+          (List.map (fn (vars, id, cons) =>
+                        (vars, id, List.map (fn (name, SOME ty) => (name, SOME (makeInfTyp ty))
+                                            | (name, NONE) => (name, NONE)) cons)) data,
+           List.map (fn (vars, id, ty) => (vars, id, makeInfTyp ty)) typs)
+    | inferDecl (P.DeclDataTypRepl (id, lid), _) = TyDeclDataTypRepl (id, lid)
+    | inferDecl (P.DeclAbsTyp (data, typs, decl), ctx) =
+      TyDeclAbsTyp
+          (List.map (fn (vars, id, cons) =>
+                        (vars, id, List.map (fn (name, SOME ty) => (name, SOME (makeInfTyp ty))
+                                            | (name, NONE) => (name, NONE)) cons)) data,
+           List.map (fn (vars, id, ty) => (vars, id, makeInfTyp ty)) typs,
+          inferDecl (decl, ctx))
+    | inferDecl (P.DeclExc excs, _) =
+      TyDeclExc (List.map (fn P.DeclExcGen (name, SOME ty) => TyDeclExcGen (name, SOME (makeInfTyp ty))
+                          | P.DeclExcGen (name, NONE) => TyDeclExcGen (name, NONE)
+                          | P.DeclExcRen (name, lid) => TyDeclExcRen (name, lid)) excs)
     | inferDecl (P.DeclSeq decls, ctx) = TyDeclSeq (List.map (fn dec => inferDecl (dec, ctx)) decls)
     | inferDecl (P.DeclLocal (decl, decr), ctx) = TyDeclLocal (inferDecl (decl, ctx), inferDecl (decr, ctx))
     | inferDecl (P.DeclOpen lids, _) = TyDeclOpen lids

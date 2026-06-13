@@ -184,7 +184,11 @@ structure Inferencer = struct
       (case HashArray.sub (env, String.concatWith "." lid) of
            SOME ([], ty) => TyPatId (b, lid, ty)
          | SOME (vars, ty) => TyPatId (b, lid, InfTypPoly (vars, ty))
-         | NONE => raise InferenceErr "Patected an existing variable for patression id")
+         | NONE => let val ty = InfTypUnbound (gensym (), ref NONE)
+                   in
+                       HashArray.update (env, String.concatWith "." lid, ([], ty));
+                       TyPatId (b, lid, ty)
+                   end)
     | inferPat (P.PatApp pats, ctx as {env}) =
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val pats = List.rev (List.map (fn ex => inferPat (ex, ctx)) pats)
@@ -210,7 +214,14 @@ structure Inferencer = struct
                     Ok () => TyPatInfixApp (patl, opr, patr, ty)
                   | Err err => raise InferenceUnionErr err
              end
-           | NONE => raise InferenceErr "Patected an existing variable for infix patression"
+           | NONE => let val ty = InfTypUnbound (gensym (), ref NONE)
+                         val tyl = getPatTyp patl
+                         val tyr = getPatTyp patr
+                         val argsty = InfTypFun (tyl, InfTypFun (tyr, ty))
+                     in
+                         HashArray.update (env, opr, ([], argsty));
+                         TyPatInfixApp (patl, opr, patr, argsty)
+                     end
       end
     | inferPat (P.PatTuple pats, ctx) =
       let val pats = List.map (fn pat => inferPat (pat, ctx)) pats
@@ -413,8 +424,55 @@ structure Inferencer = struct
           TyDeclVal (vars, vals)
       end
     | inferDecl (P.DeclFun (vars, funs), ctx) =
-      let val funs = List.map (fn P.DeclFunNonfix fs => raise InferenceErr "Unhandled function declaration"
-                              | _ => raise InferenceErr "Unhandled function inference") funs
+      let val fty = InfTypUnbound (gensym (), ref NONE)
+          val funs = List.map (fn P.DeclFunNonfix fs =>
+                                  TyDeclFunNonfix
+                                      (List.map (fn (opr, id, pats, typ, exp) =>
+                                                    let val typ = case typ of SOME typ => makeInfTyp typ
+                                                                           |  NONE => InfTypNever
+                                                        val exp = inferExp (exp, ctx)
+                                                    in
+                                                        (case Result.seq (Ok ())
+                                                                         (List.map (fn (tl, tr) => union tl tr)
+                                                                         [(fty, typ), (fty, getExpTyp exp)]) of
+                                                             Ok () => (opr, id,
+                                                                       List.map (fn pat => inferPat (pat, ctx)) pats,
+                                                                       fty,
+                                                                       exp)
+                                                           | Err err => raise InferenceUnionErr err)
+                                                    end) fs)
+                              | P.DeclFunInfixOne fs =>
+                                  TyDeclFunInfixOne
+                                      (List.map (fn (patl, id, patr, typ, exp) =>
+                                                    let val typ = case typ of SOME typ => makeInfTyp typ
+                                                                           |  NONE => InfTypNever
+                                                        val exp = inferExp (exp, ctx)
+                                                    in case inferPat (P.PatInfixApp (patl, id, patr), ctx) of
+                                                            TyPatInfixApp (patl, id, patr, ty) =>
+                                                            (case Result.seq (Ok ())
+                                                                             (List.map (fn (tl, tr) => union tl tr)
+                                                                             [(typ, ty), (fty, ty), (fty, getExpTyp exp)]) of
+                                                                 Ok () => (patl, id, patr, fty, exp)
+                                                               | Err err => raise InferenceUnionErr err)
+                                                          | _ => raise InferenceErr "Impossible Function Infix"
+                                                    end) fs)
+                              | P.DeclFunInfixMany fs =>
+                                  TyDeclFunInfixMany
+                                      (List.map (fn (patl, id, patr, pats, typ, exp) =>
+                                                    let val typ = case typ of SOME typ => makeInfTyp typ
+                                                                           |  NONE => InfTypNever
+                                                        val exp = inferExp (exp, ctx)
+                                                    in case inferPat (P.PatInfixApp (patl, id, patr), ctx) of
+                                                            TyPatInfixApp (patl, id, patr, ty) =>
+                                                            (case Result.seq (Ok ())
+                                                                             (List.map (fn (tl, tr) => union tl tr)
+                                                                             [(typ, ty), (fty, ty), (fty, getExpTyp exp)]) of
+                                                                 Ok () => (patl, id, patr,
+                                                                           List.map (fn pat => inferPat (pat, ctx)) pats,
+                                                                           fty, exp)
+                                                               | Err err => raise InferenceUnionErr err)
+                                                          | _ => raise InferenceErr "Impossible Function Infix"
+                                                    end) fs)) funs
       in
           TyDeclFun (vars, funs)
       end
@@ -424,21 +482,21 @@ structure Inferencer = struct
     | inferDecl (P.DeclDataTyp (data, typs), _) =
       TyDeclDataTyp
           (List.map (fn (vars, id, cons) =>
-                        (vars, id, List.map (fn (name, SOME ty) => (name, SOME (makeInfTyp ty))
-                                            | (name, NONE) => (name, NONE)) cons)) data,
+                        (vars, id, List.map (fn (id, SOME ty) => (id, SOME (makeInfTyp ty))
+                                            | (id, NONE) => (id, NONE)) cons)) data,
            List.map (fn (vars, id, ty) => (vars, id, makeInfTyp ty)) typs)
     | inferDecl (P.DeclDataTypRepl (id, lid), _) = TyDeclDataTypRepl (id, lid)
     | inferDecl (P.DeclAbsTyp (data, typs, decl), ctx) =
       TyDeclAbsTyp
           (List.map (fn (vars, id, cons) =>
-                        (vars, id, List.map (fn (name, SOME ty) => (name, SOME (makeInfTyp ty))
-                                            | (name, NONE) => (name, NONE)) cons)) data,
+                        (vars, id, List.map (fn (id, SOME ty) => (id, SOME (makeInfTyp ty))
+                                            | (id, NONE) => (id, NONE)) cons)) data,
            List.map (fn (vars, id, ty) => (vars, id, makeInfTyp ty)) typs,
           inferDecl (decl, ctx))
     | inferDecl (P.DeclExc excs, _) =
-      TyDeclExc (List.map (fn P.DeclExcGen (name, SOME ty) => TyDeclExcGen (name, SOME (makeInfTyp ty))
-                          | P.DeclExcGen (name, NONE) => TyDeclExcGen (name, NONE)
-                          | P.DeclExcRen (name, lid) => TyDeclExcRen (name, lid)) excs)
+      TyDeclExc (List.map (fn P.DeclExcGen (id, SOME ty) => TyDeclExcGen (id, SOME (makeInfTyp ty))
+                          | P.DeclExcGen (id, NONE) => TyDeclExcGen (id, NONE)
+                          | P.DeclExcRen (id, lid) => TyDeclExcRen (id, lid)) excs)
     | inferDecl (P.DeclSeq decls, ctx) = TyDeclSeq (List.map (fn dec => inferDecl (dec, ctx)) decls)
     | inferDecl (P.DeclLocal (decl, decr), ctx) = TyDeclLocal (inferDecl (decl, ctx), inferDecl (decr, ctx))
     | inferDecl (P.DeclOpen lids, _) = TyDeclOpen lids

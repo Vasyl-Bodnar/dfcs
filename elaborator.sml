@@ -69,6 +69,16 @@ structure Elaborator = struct
     | shuntingYardPat (pat::pats) ctx opst valst false = shuntingYardCombinePat (elaboratePat (pat, ctx)) pats ctx opst valst false
 
   and elaboratePat (P.PatApp pats, ctx) = shuntingYardPat pats ctx [] [] false
+    | elaboratePat (P.PatTuple pats, ctx) = P.PatTuple (List.map (fn pat => elaboratePat (pat, ctx)) pats)
+    | elaboratePat (P.PatRecord rows, ctx) =
+      P.PatRecord (List.map (fn P.PatRecordEntryA (lab, pat) =>
+                                P.PatRecordEntryA (lab, elaboratePat (pat, ctx))
+                            | P.PatRecordEntryB (lab, typ, pat) =>
+                              P.PatRecordEntryB (lab, typ, Option.map (fn p => elaboratePat (p, ctx)) pat))
+                            rows)
+    | elaboratePat (P.PatList pats, ctx) = P.PatList (List.map (fn pat => elaboratePat (pat, ctx)) pats)
+    | elaboratePat (P.PatTypeAnnote (pat, typ), ctx) = P.PatTypeAnnote (elaboratePat (pat, ctx), typ)
+    | elaboratePat (P.PatLayered (opr, lid, typ, pat), ctx) = P.PatLayered (opr, lid, typ, elaboratePat (pat, ctx))
     | elaboratePat (ast, _) = ast
 
   fun shuntingYardCombineOpExp (p, id) exps ctx opst (v::u::valst) =
@@ -133,13 +143,13 @@ structure Elaborator = struct
     | elaborateExp (P.ExpLocalDecl (decl, exps), ctx) = P.ExpLocalDecl (elaborateDecl (decl, ctx), (List.map (fn exp => elaborateExp (exp, ctx)) exps))
     | elaborateExp (P.ExpTypeAnnote (exp, typ), ctx) = P.ExpTypeAnnote (elaborateExp (exp, ctx), typ)
     | elaborateExp (P.ExpExceptionRaise exp, ctx) = P.ExpExceptionRaise (elaborateExp (exp, ctx))
-    | elaborateExp (P.ExpExceptionHandle (exp, matches), ctx) = P.ExpExceptionHandle (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
+    | elaborateExp (P.ExpExceptionHandle (exp, matches), ctx) = P.ExpExceptionHandle (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (elaboratePat (pat, ctx), elaborateExp (exp, ctx))) matches)
     | elaborateExp (P.ExpConj (expl, expr), ctx) = P.ExpConj (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
     | elaborateExp (P.ExpDisj (expl, expr), ctx) = P.ExpDisj (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
     | elaborateExp (P.ExpCond (expl, expm, expr), ctx) = P.ExpCond (elaborateExp (expl, ctx), elaborateExp (expm, ctx), elaborateExp (expr, ctx))
     | elaborateExp (P.ExpIter (expl, expr), ctx) = P.ExpIter (elaborateExp (expl, ctx), elaborateExp (expr, ctx))
-    | elaborateExp (P.ExpMatch (exp, matches), ctx) = P.ExpMatch (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
-    | elaborateExp (P.ExpFn matches, ctx) = P.ExpFn (List.map (fn (pat, exp) => (pat, elaborateExp (exp, ctx))) matches)
+    | elaborateExp (P.ExpMatch (exp, matches), ctx) = P.ExpMatch (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (elaboratePat (pat, ctx), elaborateExp (exp, ctx))) matches)
+    | elaborateExp (P.ExpFn matches, ctx) = P.ExpFn (List.map (fn (pat, exp) => (elaboratePat (pat, ctx), elaborateExp (exp, ctx))) matches)
     | elaborateExp (ast, _) = ast
 
   (* TODO: Handle modules and local-let kind scopes for infixes
@@ -148,11 +158,14 @@ structure Elaborator = struct
     | elaborateDecl (P.DeclSeq seq, ctx) =
       P.DeclSeq (List.map (fn x => elaborateDecl (x, ctx)) seq)
     | elaborateDecl (P.DeclVal (vars, vals), ctx) =
-      P.DeclVal (vars, List.map (fn (b, p, exp) => (b, p, elaborateExp (exp, ctx))) vals)
+      P.DeclVal (vars, List.map (fn (b, p, exp) => (b, elaboratePat (p, ctx), elaborateExp (exp, ctx))) vals)
     | elaborateDecl (P.DeclFun (vars, fs), ctx) =
       P.DeclFun (vars, List.map (fn P.DeclFunNonfix matches =>
                                     P.DeclFunNonfix (List.map (fn (b, id, ps, typ, exp) =>
-                                                                  (b, id, ps, typ, elaborateExp (exp, ctx))) matches)) fs)
+                                                                  (b, id,
+                                                                   List.map (fn p => elaboratePat (p, ctx)) ps,
+                                                                   typ,
+                                                                   elaborateExp (exp, ctx))) matches)) fs)
     | elaborateDecl (P.DeclAbsTyp (dbind, tbind, decl), ctx) =
       P.DeclAbsTyp (dbind, tbind, elaborateDecl (decl, ctx))
     | elaborateDecl (P.DeclLocal (decll, declr), ctx) =

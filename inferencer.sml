@@ -1,3 +1,6 @@
+(* This Source Code Form is subject to the terms of the Mozilla Public
+   License, v. 2.0. If a copy of the MPL was not distributed with this
+   file, You can obtain one at http://mozilla.org/MPL/2.0/. *)
 structure Inferencer = struct
   structure P = Parser
   datatype con = datatype P.con
@@ -117,7 +120,8 @@ structure Inferencer = struct
     | getExpTyp (TyExpInfixApp (_, _, _, ty)) = ty
     | getExpTyp (TyExpTuple (_, ty)) = ty
     | getExpTyp (TyExpRecord (_, ty)) = ty
-    | getExpTyp (TyExpRecordSelect (_, ty)) = ty
+    | getExpTyp (TyExpRecordSelect (_, ty as InfTypFun _)) = ty
+    | getExpTyp (TyExpRecordSelect (s, _)) = raise InferenceErr ("Illegal Record Select: #" ^ s)
     | getExpTyp (TyExpList (_, ty)) = ty
     | getExpTyp (TyExpSeq (_, ty)) = ty
     | getExpTyp (TyExpLocalDecl (_, _, ty)) = ty
@@ -336,7 +340,12 @@ structure Inferencer = struct
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val exps = List.rev (List.map (fn ex => inferExp (ex, ctx)) exps)
       in case exps of
-             f::exps =>
+             [TyExpRecordSelect (s, _), record as TyExpRecord (rows, rty)] =>
+             (case List.find (fn (n, _) => s = n) rows of
+                 SOME (_, exp) => TyExpApp ([TyExpRecordSelect (s, InfTypFun (rty, getExpTyp exp)), record], getExpTyp exp)
+               | NONE => raise InferenceErr "Record Select on a wrong record")
+           | (TyExpRecordSelect _)::_ => raise InferenceErr "Illegal Record Select without a record"
+           | f::exps =>
              let val fty = getExpTyp f
                  val appty = List.foldr (fn (ex, acc) => InfTypFun (getExpTyp ex, acc)) ty exps
              in case union fty appty of
@@ -371,7 +380,7 @@ structure Inferencer = struct
       in
           TyExpRecord (rows, InfTypRecord rowtys)
       end
-    | inferExp (P.ExpRecordSelect s, ctx) = raise InferenceErr "Unhandled (Makes no sense alone)" (* TODO: Handle it inside of ExpApp *)
+    | inferExp (P.ExpRecordSelect s, ctx) = TyExpRecordSelect (s, InfTypNever)
     | inferExp (P.ExpList exps, ctx) =
       let val ty = InfTypUnbound (gensym (), ref NONE)
           val exps = List.map (fn ex => inferExp (ex, ctx)) exps

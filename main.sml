@@ -8,3 +8,5 @@ val _ = PolyML.make "parser"
 val _ = PolyML.make "elaborator"
 
 val _ = PolyML.make "inferencer"
+
+(* TODO: Convert tuples to records, sort records *)

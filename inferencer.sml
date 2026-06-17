@@ -3,7 +3,7 @@ structure Inferencer = struct
   datatype con = datatype P.con
   type longid = P.longid
 
-  datatype typ_pat = TyPatWildcard
+  datatype typ_pat = TyPatWildcard of inf_typ
           | TyPatCon of con * inf_typ
           | TyPatId of longid * inf_typ
           | TyPatConstr of longid * typ_pat * inf_typ
@@ -14,7 +14,7 @@ structure Inferencer = struct
           | TyPatList of typ_pat list * inf_typ
   and rec_entry_typ_pat = TyPatRecordEntryA of string * typ_pat * inf_typ
                         | TyPatRecordEntryB of string * typ_pat option * inf_typ
-  and inf_typ = InfTypUnbound of string * inf_typ option ref (* TODO: Wildcard might be better unbound rather than never *)
+  and inf_typ = InfTypUnbound of string * inf_typ option ref
           | InfTypConstr of inf_typ list * longid
           | InfTypFun of inf_typ * inf_typ
           | InfTypTuple of inf_typ list
@@ -84,7 +84,7 @@ structure Inferencer = struct
   fun getFunRight (InfTypFun (_, r)) = r
     | getFunRight _ = raise InferenceErr "Cannot get result as this is not a function"
 
-  fun getPatTyp TyPatWildcard = InfTypNever
+  fun getPatTyp (TyPatWildcard ty) = ty
     | getPatTyp (TyPatCon (_, ty)) = ty
     | getPatTyp (TyPatId (_, ty)) = ty
     | getPatTyp (TyPatConstr (_, _, ty)) = ty
@@ -94,7 +94,7 @@ structure Inferencer = struct
     | getPatTyp (TyPatRecord (_, ty)) = ty
     | getPatTyp (TyPatList (_, ty)) = ty
 
-  fun getPatIdsTyps TyPatWildcard = []
+  fun getPatIdsTyps (TyPatWildcard _) = []
     | getPatIdsTyps (TyPatCon _) = []
     | getPatIdsTyps (TyPatId (lid, ty)) = [(String.concatWith "." lid, ty)]
     | getPatIdsTyps (TyPatConstr (_, pat, _)) = getPatIdsTyps pat
@@ -197,7 +197,7 @@ structure Inferencer = struct
            | _ => Err ("Unhandled union/Wrong type", tyx, tyy)
       end
 
-  fun inferPat (P.PatWildcard, _) = TyPatWildcard
+  fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref NONE))
     | inferPat (P.PatCon (P.ConInt x), _) = TyPatCon (ConInt x, InfTypConstr ([], ["int"]))
     | inferPat (P.PatCon (P.ConString x), _) = TyPatCon (ConString x, InfTypConstr ([], ["string"]))
     | inferPat (P.PatCon (P.ConChar x), _) = TyPatCon (ConChar x, InfTypConstr ([], ["char"]))

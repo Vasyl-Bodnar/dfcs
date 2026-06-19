@@ -342,7 +342,7 @@ and coreConstrTyp ctx =
                         coreATTyp]) ctx
 and coreTupleTyp ctx =
     memoizeTyp "coreTupleTyp"
-               (choose [map (fn typs => TypRecord (List.rev (#2 (List.foldl (fn (typ, (n, acc)) => (n+1, (Int.toString n, typ)::acc)) (1, []) typs)))) (oneSep coreConstrTyp some (ignoreLeft (ignoreLeft space (ch #"*")) coreConstrTyp)),
+               (choose [map (fn typs => TypRecord (List.rev (#2 (List.foldl (fn (typ, (n, acc)) => (n+1, (Int.toString n, typ)::acc)) (1, []) typs)))) (oneSep coreConstrTyp some (ignoreLeft (spacedCh #"*") coreConstrTyp)),
                         coreConstrTyp]) ctx
 and coreAppTyp ctx =
     memoizeTyp "coreAppTyp"

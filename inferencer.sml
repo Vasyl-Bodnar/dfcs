@@ -407,6 +407,7 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
          | Err err => raise InferenceUnionErr err
     end
 
+(* TODO: Errors exist in this way *)
 and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix functions should be impossible"
   | inferFunDecl (P.DeclFunNonfix ((opr, id, pats, typ, exp)::fs), ctx as {env}) =
     let val fty = InfTypUnbound (gensym (), ref NONE)
@@ -449,6 +450,7 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
     in
         (TyDeclFunNonfix (f::fs), (fid, fsig))
     end
+  (* TODO: Infix functions *)
   | inferFunDecl (P.DeclFunInfixOne fs, ctx as {env}) = raise InferenceErr "Unhandled function kind InfixOne"
   | inferFunDecl (P.DeclFunInfixMany fs, ctx as {env}) = raise InferenceErr "Unhandled function kind InfixMany"
 

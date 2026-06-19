@@ -22,7 +22,7 @@ fun shuntingYardCombineOpPat (p, id) pats ctx opst (v::u::valst) =
     if p >= 0
     then shuntingYardPat pats ctx opst ((P.PatInfixApp (P.PatApp es, id, e))::valst) false
     else shuntingYardPat pats ctx opst ((P.PatInfixApp (e, id, P.PatApp es))::valst) false
-  | shuntingYardCombineOpPat (p, id) pats ctx opst _ = raise IllegalElab "Elaborator Error: Infix operator has no operands."
+  | shuntingYardCombineOpPat (p, id) pats ctx opst _ = raise IllegalElab "Elaborator Error: Pattern infix operator has no operands."
 
 and shuntingYardCombinePat pat pats ctx opst (allvalst as ((P.PatApp es)::valst)) b =
     if b
@@ -168,7 +168,34 @@ and elaborateDecl (P.DeclSeq [decl], ctx) = elaborateDecl (decl, ctx)
                                                                 (b, id,
                                                                  List.map (fn p => elaboratePat (p, ctx)) ps,
                                                                  typ,
-                                                                 elaborateExp (exp, ctx))) matches)) fs)
+                                                                 elaborateExp (exp, ctx))) matches)
+                              | P.DeclFunInfixOne matches =>
+                                (case matches of
+                                     (_, id, _, _, _)::_ =>
+                                     (case checkInfix id ctx of
+                                          SOME _ =>
+                                          P.DeclFunInfixOne (List.map (fn (pl, id, pr, typ, exp) =>
+                                                                          (elaboratePat (pl, ctx),
+                                                                           id,
+                                                                           elaboratePat (pr, ctx),
+                                                                           typ,
+                                                                           elaborateExp (exp, ctx))) matches)
+                                        | NONE =>
+                                          P.DeclFunNonfix (List.map (fn (P.PatId (_, [id]), pl, pr, typ, exp) =>
+                                                                        (false, id,
+                                                                         [P.PatId (false, [pl]), elaboratePat (pr, ctx)],
+                                                                         typ,
+                                                                         elaborateExp (exp, ctx))
+                                                                    | _ => raise IllegalElab "Expected either proper infix or proper nonfix function, found neither") matches))
+                                  | [] => raise IllegalElab "Empty functions are impossible")
+                              | P.DeclFunInfixMany matches =>
+                                P.DeclFunInfixMany (List.map (fn (pl, id, pr, ps, typ, exp) =>
+                                                                 (elaboratePat (pl, ctx),
+                                                                  id,
+                                                                  elaboratePat (pr, ctx),
+                                                                  List.map (fn p => elaboratePat (p, ctx)) ps,
+                                                                  typ,
+                                                                  elaborateExp (exp, ctx))) matches)) fs)
   | elaborateDecl (P.DeclAbsTyp (dbind, tbind, decl), ctx) =
     P.DeclAbsTyp (dbind, tbind, elaborateDecl (decl, ctx))
   | elaborateDecl (P.DeclLocal (decll, declr), ctx) =

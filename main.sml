@@ -10,3 +10,7 @@ val _ = PolyML.make "parser"
 val _ = PolyML.make "elaborator"
 
 val _ = PolyML.make "inferencer"
+
+fun doAll s = Result.map Inferencer.infer (Result.map Elaborator.elaborate (Parser.parse Parser.coreDecl s))
+
+(* TODO: Combinable errors *)

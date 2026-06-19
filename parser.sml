@@ -178,6 +178,7 @@ fun chain2 (p, q) = bindFull (fn (rp, ctx) => map (fn rq => (rp, rq)) q ctx) p
 fun chain3 (p, q, r) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => map (fn rr => (rp, rq, rr)) r ctx) q ctx) p
 fun chain4 (p, q, r, s) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => map (fn rs => (rp, rq, rr, rs)) s ctx) r ctx) q ctx) p
 fun chain5 (p, q, r, s, t) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => bindFull (fn (rs, ctx) => map (fn rt => (rp, rq, rr, rs, rt)) t ctx) s ctx) r ctx) q ctx) p
+fun chain6 (p, q, r, s, t, u) = bindFull (fn (rp, ctx) => bindFull (fn (rq, ctx) => bindFull (fn (rr, ctx) => bindFull (fn (rs, ctx) => bindFull (fn (rt, ctx) => map (fn ru => (rp, rq, rr, rs, rt, ru)) u ctx) t ctx) s ctx) r ctx) q ctx) p
 
 fun ignoreLeft p q = bindFull (fn (_, ctx) => q ctx) p
 fun ignoreRight p q = bindFull (fn (res, ctx) => (map (fn _ => res) q) ctx) p
@@ -394,21 +395,10 @@ and coreNonEqIdPat ctx =
                (choose [map PatId (chain2 (opt false (map (fn _ => true) (chain2 (str "op", someSpace))), coreNonEqLongId)),
                         coreATPat]) ctx
 
-and coreNonEqAppPat ctx =
-    memoizePat "coreNonEqAppPat"
-               (choose [map PatApp (map List.concat (chain [chain [coreNonEqIdPat], some (ignoreLeft space coreNonEqIdPat)])),
-                        coreNonEqIdPat]) ctx
-
-and coreNonEqTypeAnnotePat ctx =
-    memoizePat "coreNonEqTypeAnnotePat"
-               (choose [map PatTypeAnnote
-                            (chain2 (ignoreRight coreNonEqAppPat (spacedCh #":"), coreTyp)),
-                        coreNonEqAppPat]) ctx
-
 and coreNonEqPat ctx =
     memoizePat "coreNonEqPat"
                (choose [map PatLayered (chain4 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)), coreId, opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)), (ignoreLeft (between space (str "as") space) coreNonEqPat))),
-                        coreNonEqTypeAnnotePat]) ctx
+                        coreNonEqIdPat]) ctx
 
 and coreValBind ctx = chain3 (opt false (map (fn _ => true) (ignoreRight (str "rec") someSpace)), coreNonEqPat, ignoreLeft (spacedCh #"=") coreExp) ctx
 and coreFunBindNonFix ctx = (chain5 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)),
@@ -416,8 +406,21 @@ and coreFunBindNonFix ctx = (chain5 (opt false (map (fn _ => true) (ignoreRight 
                                      some (ignoreLeft space coreNonEqPat),
                                      opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
                                      ignoreLeft (spacedCh #"=") coreExp)) ctx
-(* TODO: Handle infix functions *)
-and coreFunBind ctx = choose [map DeclFunNonfix (oneSep coreFunBindNonFix many (ignoreLeft (spacedCh #"|") coreFunBindNonFix))] ctx
+and coreFunBindInfixOne ctx = (chain5 (coreNonEqPat,
+                                       ignoreLeft space coreId,
+                                       ignoreLeft space coreNonEqPat,
+                                       opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                       ignoreLeft (spacedCh #"=") coreExp)) ctx
+and coreFunBindInfixMany ctx = (chain6 (ignoreLeft (spacedCh #"(") coreNonEqPat,
+                                        ignoreLeft space coreId,
+                                        between space coreNonEqPat (spacedCh #")"),
+                                        some (ignoreLeft space coreNonEqPat),
+                                        opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                        ignoreLeft (spacedCh #"=") coreExp)) ctx
+
+and coreFunBind ctx = choose [map DeclFunInfixOne (oneSep coreFunBindInfixOne many (ignoreLeft (spacedCh #"|") coreFunBindInfixOne)),
+                              map DeclFunInfixMany (oneSep coreFunBindInfixMany many (ignoreLeft (spacedCh #"|") coreFunBindInfixMany)),
+                              map DeclFunNonfix (oneSep coreFunBindNonFix many (ignoreLeft (spacedCh #"|") coreFunBindNonFix))] ctx
 and coreTypBind ctx = chain3 (listSpecial coreVar, between space coreId (spacedCh #"="), coreTyp) ctx
 and coreExcBind ctx = choose [map DeclExcRen (chain2 (coreNonEqId, ignoreLeft (spacedCh #"=") coreLongId)),
                               map DeclExcGen (chain2 (coreId, opt NONE (map SOME (ignoreLeft (between space (str "of") space) coreTyp))))] ctx

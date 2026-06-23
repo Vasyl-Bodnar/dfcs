@@ -2,7 +2,6 @@
    License, v. 2.0. If a copy of the MPL was not distributed with this
    file, You can obtain one at http://mozilla.org/MPL/2.0/. *)
 val _ = PolyML.make "result"
-
 val _ = PolyML.make "listsort"
 
 val _ = PolyML.make "parser"
@@ -16,3 +15,4 @@ fun doAll s = Result.map Inferencer.infer (Result.map Elaborator.elaborate (Pars
 *)
 
 (* TODO: Combinable errors *)
+(* TODO: Proper Infixes in Elaborator *)

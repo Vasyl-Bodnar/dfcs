@@ -462,9 +462,94 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
     in
         (TyDeclFunNonfix (f::fs), (fid, fsig))
     end
-  (* TODO: Infix functions *)
-  | inferFunDecl (P.DeclFunInfixOne fs, ctx as {env, aliases}) = raise InferenceErr "Unhandled function kind InfixOne"
-  | inferFunDecl (P.DeclFunInfixMany fs, ctx as {env, aliases}) = raise InferenceErr "Unhandled function kind InfixMany"
+  | inferFunDecl (P.DeclFunInfixOne ((patl, id, patr, typ, exp)::fs), ctx as {env, aliases}) =
+    let val fty = InfTypUnbound (gensym (), ref NONE)
+        val (f, fid, fsig) =
+            let val typ = case typ of SOME typ => makeInfTyp typ
+                                    | NONE => InfTypNever
+                val patl = inferPat (patl, ctx)
+                val patr = inferPat (patr, ctx)
+                val patidstys = List.map (fn (n, ty) => (n, [], ty))
+                                         (List.concat (List.map getPatIdsTyps [patl, patr]))
+                val pattys = List.map getPatTyp [patl, patr]
+                val fsig = makeFun (fty::pattys)
+                val env = patidstys @ (id, [], fsig)::env
+                val exp = inferExp (exp, {env=env, aliases=aliases})
+            in (case Result.seq (Ok ())
+                                (List.map (fn (tl, tr) => union tl tr ctx)
+                                          [(fty, typ), (fty, getExpTyp exp)]) of
+                    Ok () => ((patl, id, patr, fty, exp),
+                              id,
+                              fsig)
+                  | Err err => raise InferenceUnionErr err)
+            end
+        val fs = List.map (fn (patl, id, patr, typ, exp) =>
+                              let val typ = case typ of SOME typ => makeInfTyp typ
+                                                      | NONE => InfTypNever
+                                  val patl = inferPat (patl, ctx)
+                                  val patr = inferPat (patr, ctx)
+                                  val patidstys = List.map (fn (n, ty) => (n, [], ty))
+                                                           (List.concat (List.map getPatIdsTyps [patl, patr]))
+                                  val pattys = List.map getPatTyp [patl, patr]
+                                  val fsigr = makeFun (fty::pattys)
+                                  val env = patidstys @ (id, [], fsigr)::env
+                                  val exp = inferExp (exp, {env=env, aliases=aliases})
+                              in (case Result.seq (if fid = id
+                                                   then Ok ()
+                                                   else Err ("Function names should match in guards", fsig, fsigr))
+                                                  (List.map (fn (tl, tr) => union tl tr ctx)
+                                                            [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
+                                      Ok () => ((patl, id, patr, fty, exp))
+                                    | Err err => raise InferenceUnionErr err)
+                              end) fs
+    in
+        (TyDeclFunInfixOne (f::fs), (fid, fsig))
+    end
+  | inferFunDecl (P.DeclFunInfixMany ((patl, id, patr, pats, typ, exp)::fs), ctx as {env, aliases}) =
+    let val fty = InfTypUnbound (gensym (), ref NONE)
+        val (f, fid, fsig) =
+            let val typ = case typ of SOME typ => makeInfTyp typ
+                                    | NONE => InfTypNever
+                val patl = inferPat (patl, ctx)
+                val patr = inferPat (patr, ctx)
+                val pats = List.map (fn pat => inferPat (pat, ctx)) pats
+                val patidstys = List.map (fn (n, ty) => (n, [], ty))
+                                         (List.concat (List.map getPatIdsTyps (patl::patr::pats)))
+                val pattys = List.map getPatTyp (patl::patr::pats)
+                val fsig = makeFun (fty::pattys)
+                val env = patidstys @ (id, [], fsig)::env
+                val exp = inferExp (exp, {env=env, aliases=aliases})
+            in (case Result.seq (Ok ())
+                                (List.map (fn (tl, tr) => union tl tr ctx)
+                                          [(fty, typ), (fty, getExpTyp exp)]) of
+                    Ok () => ((patl, id, patr, pats, fty, exp),
+                              id,
+                              fsig)
+                  | Err err => raise InferenceUnionErr err)
+            end
+        val fs = List.map (fn (patl, id, patr, pats, typ, exp) =>
+                              let val typ = case typ of SOME typ => makeInfTyp typ
+                                                      | NONE => InfTypNever
+                                  val patl = inferPat (patl, ctx)
+                                  val patr = inferPat (patr, ctx)
+                                  val pats = List.map (fn pat => inferPat (pat, ctx)) pats
+                                  val patidstys = List.map (fn (n, ty) => (n, [], ty))
+                                                           (List.concat (List.map getPatIdsTyps (patl::patr::pats)))
+                                  val pattys = List.map getPatTyp (patl::patr::pats)
+                                  val fsigr = makeFun (fty::pattys)
+                                  val env = patidstys @ (id, [], fsigr)::env
+                                  val exp = inferExp (exp, {env=env, aliases=aliases})
+                              in (case Result.seq (if fid = id
+                                                   then Ok ()
+                                                   else Err ("Function names should match in guards", fsig, fsigr))
+                                                  (List.map (fn (tl, tr) => union tl tr ctx)
+                                                            [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
+                                      Ok () => ((patl, id, patr, pats, fty, exp))
+                                    | Err err => raise InferenceUnionErr err)
+                              end) fs
+    in
+        (TyDeclFunInfixMany (f::fs), (fid, fsig))
+    end
 
 and inferDecl (P.DeclVal (vars, vals), ctx) =
     let val (vals, ctx) = List.foldl (fn ((b, pat, exp), (acc, ctx as {env, aliases})) =>

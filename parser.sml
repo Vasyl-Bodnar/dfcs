@@ -295,6 +295,8 @@ val coreVar = ignoreLeft (ch #"'") (map (fn ls => String.implode (List.concat ls
 val coreLongId = map List.concat (chain [map (fn x => [x]) coreId, many (ignoreLeft (ch #".") coreId)])
 val coreLab = choose [coreId, map Int.toString conNonZeroNum]
 
+val coreNonStarLongId = check (fn [s] => String.compare (s, "*") <> EQUAL
+                            | _ => true) coreLongId
 val coreNonEqLongId = check (fn [s] => String.compare (s, "=") <> EQUAL
                             | _ => true) coreLongId
 val coreNonEqId = check (fn s => String.compare (s, "=") <> EQUAL) coreId
@@ -326,9 +328,10 @@ fun coreATTyp ctx =
                         map TypRecord (listBetween (ch #"{") (chain2 (ignoreRight coreLab (spacedCh #":"), coreTyp)) many #"," (ch #"}"))]) ctx
 and coreConstrTyp ctx =
     memoizeTyp "coreConstrTyp"
-               (choose [map TypConstr (chain2 (listBetween (ch #"(") coreTyp many #"," (ch #")"), (ignoreLeft space coreLongId))),
-                        map TypConstr (chain2 (chain [coreATTyp], (ignoreLeft space coreLongId))),
-                        map TypConstr (chain2 (const [], coreLongId)),
+               (choose [map TypConstr (chain2 (listBetween (ch #"(") coreTyp many #"," (ch #")"), (ignoreLeft space coreNonStarLongId))),
+                        map TypConstr (chain2 (chain [map TypConstr (chain2 (const [], coreNonStarLongId))], (ignoreLeft space coreNonStarLongId))),
+                        map TypConstr (chain2 (chain [coreATTyp], (ignoreLeft space coreNonStarLongId))),
+                        map TypConstr (chain2 (const [], coreNonStarLongId)),
                         coreATTyp]) ctx
 and coreTupleTyp ctx =
     memoizeTyp "coreTupleTyp"

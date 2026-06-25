@@ -641,7 +641,7 @@ and inferDecl (P.DeclVal (vars, vals), ctx) =
   (* | inferDecl (TyDeclStruct _, ctx) = TODO: MODULES *)
   | inferDecl (P.DeclEmpty, ctx) = (TyDeclEmpty, ctx)
 
-fun infer ast =
+fun infer (ast, _) =
     let val env = [("+", [], makeFun [InfTypConstr ([], ["int"]), InfTypConstr ([], ["int"]), InfTypConstr ([], ["int"])])]
     in
         inferDecl (ast, {env=env, aliases=[]})

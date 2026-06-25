@@ -8,11 +8,12 @@ exception IllegalElab of string
 exception ImproperElabResultExp of P.exp list
 exception ImproperElabResultPat of P.pat list
 
-datatype ctx = Ctx of {htinfix: int HashArray.hash}
+type ctx = {tinfix: (string * int option) list}
 
-fun checkInfix id (Ctx {htinfix, ...}) = HashArray.sub (htinfix, id)
-fun removeInfix id (Ctx {htinfix, ...}) = HashArray.delete (htinfix, id)
-fun addInfix fix id (Ctx {htinfix, ...}) = HashArray.update (htinfix, id, fix)
+fun checkInfix id {tinfix, ...} = List.find (fn (i, SOME _) => id = i
+                                                  | _ => false) tinfix
+fun removeInfix id {tinfix} = {tinfix=(id, NONE)::tinfix}
+fun addInfix fix id {tinfix} = {tinfix=(id, SOME fix)::tinfix}
 
 fun shuntingYardCombineOpPat (p, id) pats ctx opst (v::u::valst) =
     if p >= 0
@@ -39,7 +40,7 @@ and shuntingYardPat [] ctx [] [v] _ = v
   | shuntingYardPat [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOpPat (p, id) [] ctx opst valst
   | shuntingYardPat ((pat as P.PatId (false, [id])) :: pats) ctx opst valst b =
     (case checkInfix id ctx of
-         SOME pow => (case opst of
+         SOME (_, SOME pow) => (case opst of
                           [] => shuntingYardPat pats ctx [(pow,id)] valst false
                         | ((p,i)::oprest) =>
                           case (p < 0, pow < 0) of
@@ -59,11 +60,11 @@ and shuntingYardPat [] ctx [] [v] _ = v
                                                else (if (~pow - 1) > p
                                                      then shuntingYardPat pats ctx ((pow,id)::opst) valst false
                                                      else shuntingYardCombineOpPat (p, i) pats ctx ((pow,id)::oprest) valst))
-       | NONE => shuntingYardCombinePat pat pats ctx opst valst b)
+       | _ => shuntingYardCombinePat pat pats ctx opst valst b)
   | shuntingYardPat ((pat as P.PatId (true, [id])) :: pats) ctx opst valst b =
     (case checkInfix id ctx of
-         SOME _ => shuntingYardCombinePat pat pats ctx opst valst b
-       | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
+         SOME (_, SOME _) => shuntingYardCombinePat pat pats ctx opst valst b
+       | _ => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
   | shuntingYardPat ((pat as P.PatId (true, _)) :: pats) ctx opst valst b = raise IllegalElab "Elaborator Error: `op` applied to a nonfix value construct. Constructs cannot be infixed (e.g. Module.+ has to be nonfix)"
   | shuntingYardPat (pat::pats) ctx opst valst true = shuntingYardCombinePat (elaboratePat (pat, ctx)) pats ctx opst valst true
   | shuntingYardPat (pat::pats) ctx opst valst false = shuntingYardCombinePat (elaboratePat (pat, ctx)) pats ctx opst valst false
@@ -110,7 +111,7 @@ and shuntingYard [] ctx [] [v] _ = v
   | shuntingYard [] ctx ((p, id)::opst) valst _ = shuntingYardCombineOpExp (p, id) [] ctx opst valst
   | shuntingYard ((exp as P.ExpValId (false, [id])) :: exps) ctx opst valst b =
     (case checkInfix id ctx of
-         SOME pow => (case opst of
+         SOME (_, SOME pow) => (case opst of
                           [] => shuntingYard exps ctx [(pow,id)] valst false
                         | ((p,i)::oprest) =>
                           case (p < 0, pow < 0) of
@@ -130,11 +131,11 @@ and shuntingYard [] ctx [] [v] _ = v
                                                else (if (~pow - 1) >= p
                                                      then shuntingYard exps ctx ((pow,id)::opst) valst false
                                                      else shuntingYardCombineOpExp (p, i) exps ctx ((pow,id)::oprest) valst))
-       | NONE => shuntingYardCombineExp exp exps ctx opst valst b)
+       | _ => shuntingYardCombineExp exp exps ctx opst valst b)
   | shuntingYard ((exp as P.ExpValId (true, [id])) :: exps) ctx opst valst b =
     (case checkInfix id ctx of
-         SOME _ => shuntingYardCombineExp exp exps ctx opst valst b
-       | NONE => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
+         SOME (_, SOME _) => shuntingYardCombineExp exp exps ctx opst valst b
+       | _ => raise IllegalElab "Elaborator Error: `op` applied to a nonfix value. Either forgot to infix or misused `op`")
   | shuntingYard ((exp as P.ExpValId (true, _)) :: exps) ctx opst valst b = raise IllegalElab "Elaborator Error: `op` applied to a nonfix value construct. Constructs cannot be infixed (e.g. Module.+ has to be nonfix)"
   | shuntingYard (exp::exps) ctx opst valst true = shuntingYardCombineExp (elaborateExp (exp, ctx)) exps ctx opst valst true
   | shuntingYard (exp::exps) ctx opst valst false = shuntingYardCombineExp (elaborateExp (exp, ctx)) exps ctx opst valst false
@@ -143,7 +144,11 @@ and elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] [] false
   | elaborateExp (P.ExpRecord rows, ctx) = P.ExpRecord (ListSort.sort (fn ((ll, _), (rl, _)) => ll >= rl) (List.map (fn (lab, exp) => (lab, elaborateExp (exp, ctx))) rows))
   | elaborateExp (P.ExpList exps, ctx) = P.ExpList (List.map (fn exp => elaborateExp (exp, ctx)) exps)
   | elaborateExp (P.ExpSeq exps, ctx) = P.ExpSeq (List.map (fn exp => elaborateExp (exp, ctx)) exps)
-  | elaborateExp (P.ExpLocalDecl (decl, exps), ctx) = P.ExpLocalDecl (elaborateDecl (decl, ctx), (List.map (fn exp => elaborateExp (exp, ctx)) exps))
+  | elaborateExp (P.ExpLocalDecl (decl, exps), ctx) =
+    let val (decl, ctx) = elaborateDecl (decl, ctx)
+    in
+        P.ExpLocalDecl (decl, (List.map (fn exp => elaborateExp (exp, ctx)) exps))
+    end
   | elaborateExp (P.ExpTypeAnnote (exp, typ), ctx) = P.ExpTypeAnnote (elaborateExp (exp, ctx), typ)
   | elaborateExp (P.ExpExceptionRaise exp, ctx) = P.ExpExceptionRaise (elaborateExp (exp, ctx))
   | elaborateExp (P.ExpExceptionHandle (exp, matches), ctx) = P.ExpExceptionHandle (elaborateExp (exp, ctx), List.map (fn (pat, exp) => (elaboratePat (pat, ctx), elaborateExp (exp, ctx))) matches)
@@ -159,68 +164,87 @@ and elaborateExp (P.ExpApp exps, ctx) = shuntingYard exps ctx [] [] false
      Can also handle it later on with scope managing semantics checking *)
 and elaborateDecl (P.DeclSeq [decl], ctx) = elaborateDecl (decl, ctx)
   | elaborateDecl (P.DeclSeq seq, ctx) =
-    P.DeclSeq (List.map (fn x => elaborateDecl (x, ctx)) seq)
+    let val (lst, ctx) =
+            (List.foldl (fn (x, (lst, ctx)) =>
+                            let val (y, ctx) = elaborateDecl (x, ctx)
+                            in (y::lst, ctx)
+                            end)
+                        ([], ctx) seq)
+    in
+        (P.DeclSeq (List.rev lst), ctx)
+    end
   | elaborateDecl (P.DeclVal (vars, vals), ctx) =
-    P.DeclVal (vars, List.map (fn (b, p, exp) => (b, elaboratePat (p, ctx), elaborateExp (exp, ctx))) vals)
+    (P.DeclVal (vars, List.map (fn (b, p, exp) => (b, elaboratePat (p, ctx), elaborateExp (exp, ctx))) vals), ctx)
   | elaborateDecl (P.DeclFun (vars, fs), ctx) =
-    P.DeclFun (vars, List.map (fn P.DeclFunNonfix matches =>
-                                  P.DeclFunNonfix (List.map (fn (b, id, ps, typ, exp) =>
-                                                                (b, id,
-                                                                 List.map (fn p => elaboratePat (p, ctx)) ps,
-                                                                 typ,
-                                                                 elaborateExp (exp, ctx))) matches)
-                              | P.DeclFunInfixOne matches =>
-                                (case matches of
-                                     (_, id, _, _, _)::_ =>
-                                     (case checkInfix id ctx of
-                                          SOME _ =>
-                                          P.DeclFunInfixOne (List.map (fn (pl, id, pr, typ, exp) =>
-                                                                          (elaboratePat (pl, ctx),
-                                                                           id,
-                                                                           elaboratePat (pr, ctx),
-                                                                           typ,
-                                                                           elaborateExp (exp, ctx))) matches)
-                                        | NONE =>
-                                          P.DeclFunNonfix (List.map (fn (P.PatId (_, [id]), pl, pr, typ, exp) =>
-                                                                        (false, id,
-                                                                         [P.PatId (false, [pl]), elaboratePat (pr, ctx)],
-                                                                         typ,
-                                                                         elaborateExp (exp, ctx))
-                                                                    | _ => raise IllegalElab "Expected either proper infix or proper nonfix function, found neither") matches))
-                                  | [] => raise IllegalElab "Empty functions are impossible")
-                              | P.DeclFunInfixMany matches =>
-                                P.DeclFunInfixMany (List.map (fn (pl, id, pr, ps, typ, exp) =>
-                                                                 (elaboratePat (pl, ctx),
-                                                                  id,
-                                                                  elaboratePat (pr, ctx),
+    (P.DeclFun (vars, List.map (fn P.DeclFunNonfix matches =>
+                                   P.DeclFunNonfix (List.map (fn (b, id, ps, typ, exp) =>
+                                                                 (b, id,
                                                                   List.map (fn p => elaboratePat (p, ctx)) ps,
                                                                   typ,
-                                                                  elaborateExp (exp, ctx))) matches)) fs)
+                                                                  elaborateExp (exp, ctx))) matches)
+                               | P.DeclFunInfixOne matches =>
+                                 (case matches of
+                                      (_, id, _, _, _)::_ =>
+                                      (case checkInfix id ctx of
+                                           SOME (_, SOME _) =>
+                                           P.DeclFunInfixOne (List.map (fn (pl, id, pr, typ, exp) =>
+                                                                           (elaboratePat (pl, ctx),
+                                                                            id,
+                                                                            elaboratePat (pr, ctx),
+                                                                            typ,
+                                                                            elaborateExp (exp, ctx))) matches)
+                                         | _ =>
+                                           P.DeclFunNonfix (List.map (fn (P.PatId (_, [id]), pl, pr, typ, exp) =>
+                                                                         (false, id,
+                                                                          [P.PatId (false, [pl]), elaboratePat (pr, ctx)],
+                                                                          typ,
+                                                                          elaborateExp (exp, ctx))
+                                                                     | _ => raise IllegalElab "Expected either proper infix or proper nonfix function, found neither") matches))
+                                    | [] => raise IllegalElab "Empty functions are impossible")
+                               | P.DeclFunInfixMany matches =>
+                                 P.DeclFunInfixMany (List.map (fn (pl, id, pr, ps, typ, exp) =>
+                                                                  (elaboratePat (pl, ctx),
+                                                                   id,
+                                                                   elaboratePat (pr, ctx),
+                                                                   List.map (fn p => elaboratePat (p, ctx)) ps,
+                                                                   typ,
+                                                                   elaborateExp (exp, ctx))) matches)) fs),
+     ctx)
   | elaborateDecl (P.DeclAbsTyp (dbind, tbind, decl), ctx) =
-    P.DeclAbsTyp (dbind, tbind, elaborateDecl (decl, ctx))
+    (P.DeclAbsTyp (dbind, tbind, #1 (elaborateDecl (decl, ctx))), ctx)
   | elaborateDecl (P.DeclLocal (decll, declr), ctx) =
-    P.DeclLocal (elaborateDecl (decll, ctx), elaborateDecl (declr, ctx))
+    let val (decll, ctxl) = elaborateDecl (decll, ctx)
+        val (declr, _) = elaborateDecl (declr, ctxl)
+    in (P.DeclLocal (decll, declr), ctx)
+    end
   | elaborateDecl (P.DeclNonfix ids, ctx) =
-    let val _ = List.app (fn id => removeInfix id ctx) ids
-    in P.DeclNonfix ids
+    let val ctx = List.foldl (fn (id, acc) => removeInfix id acc) ctx ids
+    in (P.DeclNonfix ids, ctx)
     end
   | elaborateDecl (P.DeclInfix (SOME fix, ids), ctx) =
-    let val _ = List.app (fn id => addInfix fix id ctx) ids
-    in P.DeclInfix (SOME fix, ids)
+    let val ctx = List.foldl (fn (id, acc) => addInfix fix id acc) ctx ids
+    in (P.DeclInfix (SOME fix, ids), ctx)
     end
   | elaborateDecl (P.DeclInfix (NONE, ids), ctx) =
-    let val _ = List.app (fn id => addInfix 0 id ctx) ids
-    in P.DeclInfix (SOME 0, ids)
+    let val ctx = List.foldl (fn (id, acc) => addInfix 0 id acc) ctx ids
+    in (P.DeclInfix (SOME 0, ids), ctx)
     end
   | elaborateDecl (P.DeclInfixR (SOME fix, ids), ctx) =
-    let val _ = List.app (fn id => addInfix (~fix - 1) id ctx) ids
-    in P.DeclInfixR (SOME (~fix - 1), ids)
+    let val ctx = List.foldl (fn (id, acc) => addInfix (~fix - 1) id acc) ctx ids
+    in (P.DeclInfixR (SOME (~fix - 1), ids), ctx)
     end
   | elaborateDecl (P.DeclInfixR (NONE, ids), ctx) =
-    let val _ = List.app (fn id => addInfix ~1 id ctx) ids
-    in P.DeclInfixR (SOME ~1, ids)
+    let val ctx = List.foldl (fn (id, acc) => addInfix ~1 id acc) ctx ids
+    in (P.DeclInfixR (SOME ~1, ids), ctx)
     end
-  | elaborateDecl (ast, _) = ast
+  | elaborateDecl (ast, ctx) = (ast, ctx)
 
-fun elaborate (decl, P.Ctx {htinfix, ...}) = elaborateDecl (decl, Ctx {htinfix=htinfix})
+fun elaborate (decl, _) =
+    let val tinfix = [("*", 7), ("/", 7), ("div", 7), ("mod",7),
+                      ("+", 6), ("-", 6), ("^", 6), ("::", ~6), ("@", ~6),
+                      ("=", 4), ("<>", 4), (">", 4), ("<", 4), (">=", 4), ("<=", 4),
+                      (":=", 3), ("o", 3), ("before", 0)]
+    in
+        elaborateDecl (decl, {tinfix=List.map (fn (x, y) => (x, SOME y)) tinfix})
+    end
 end

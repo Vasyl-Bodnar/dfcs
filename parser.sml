@@ -63,7 +63,6 @@ datatype pat = PatWildcard
              | ExpFn of (pat * exp) list
 
 datatype ctx = Ctx of {str: string, idx: int,
-                       htinfix: int HashArray.hash,
                        httyp: (typ * ctx, string * ctx) result HashArray.hash,
                        htexp: (exp * ctx, string * ctx) result HashArray.hash,
                        htpat: (pat * ctx, string * ctx) result HashArray.hash,
@@ -127,19 +126,11 @@ fun memoizeExp uniq (p : exp parser) (ctx as Ctx {idx, htexp, ...}) =
     end
 
 fun parse (p : 'a parser) (str : string) =
-    let val ht = HashArray.hash 20 in
-        app (fn (name, fix) => HashArray.update (ht, name, fix))
-            [("*", 7), ("/", 7), ("div", 7), ("mod",7),
-             ("+", 6), ("-", 6), ("^", 6), ("::", ~6), ("@", ~6),
-             ("=", 4), ("<>", 4), (">", 4), ("<", 4), (">=", 4), ("<=", 4),
-             (":=", 3), ("o", 3), ("before", 0)];
-        p (Ctx {str=str, idx=0,
-                htinfix=ht,
-                htexp=HashArray.hash 1024,
-                httyp=HashArray.hash 1024,
-                htpat=HashArray.hash 1024,
-                htdecl=HashArray.hash 1024})
-    end
+    p (Ctx {str=str, idx=0,
+            htexp=HashArray.hash 1024,
+            httyp=HashArray.hash 1024,
+            htpat=HashArray.hash 1024,
+            htdecl=HashArray.hash 1024})
 
 fun const x ctx = Ok (x, ctx)
 
@@ -147,12 +138,12 @@ datatype waste = Waste
 fun waste x ctx = map (fn _ => Waste) x ctx
 fun constWaste ctx = Ok (Waste, ctx)
 
-fun ch c (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
+fun ch c (ctx as Ctx {str, idx, htexp, httyp, htpat, htdecl}) =
     if idx < (String.size str) andalso String.sub (str, idx) = c
-    then Ok (c, Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
+    then Ok (c, Ctx {str=str, idx=idx+1, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
     else Err ("ERROR in ch with c = " ^ String.str c ^ "\n", ctx)
 
-fun str s (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
+fun str s (ctx as Ctx {str, idx, htexp, httyp, htpat, htdecl}) =
     if String.size str - idx < String.size s then
         Err (("ERROR in str with s = \"" ^ s ^ "\", s is too large\n"), ctx)
     else let
@@ -160,13 +151,13 @@ fun str s (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
         val substr = Substring.substring (str, idx, Substring.size subs)
     in
         if Substring.compare (substr, subs) = EQUAL
-        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
+        then Ok (substr, Ctx {str=str, idx=idx + Substring.size substr, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
         else Err ("ERROR in str with s = \"" ^ s ^ "\"\n", ctx)
     end
 
-fun notChs cs (ctx as Ctx {str, idx, htinfix, htexp, httyp, htpat, htdecl}) =
+fun notChs cs (ctx as Ctx {str, idx, htexp, httyp, htpat, htdecl}) =
     if idx < (String.size str) andalso not (List.exists (fn c => c = String.sub (str, idx)) cs)
-    then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htinfix=htinfix, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
+    then Ok (String.sub (str, idx), Ctx {str=str, idx=idx+1, htexp=htexp, httyp=httyp, htpat=htpat, htdecl=htdecl})
     else Err ("ERROR in ch with cs = [" ^ (String.concatWith "," (List.map String.str cs)) ^ "]\n", ctx)
 
 fun eof (ctx as Ctx {str, idx, ...}) =
@@ -298,7 +289,6 @@ val coreId = check (fn s => not (List.exists (fn r => (String.compare (s, r)) = 
                                 (chain [map (fn x => [x]) letter,
                                         many (choose [letter, digit, ch #"_", ch #"'"])]),
                             map String.implode (some symbolic)])
-val coreInfixId = checkFull (fn (s, Ctx {htinfix, ...}) => isSome (HashArray.sub (htinfix, s))) coreId
 val coreVar = ignoreLeft (ch #"'") (map (fn ls => String.implode (List.concat ls))
                                         (chain [map (fn x => [x]) letter,
                                                 many (choose [letter, digit, ch #"_", ch #"'"])]))

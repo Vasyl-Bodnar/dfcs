@@ -16,9 +16,7 @@ fun removeInfix id {tinfix} = {tinfix=(id, NONE)::tinfix}
 fun addInfix fix id {tinfix} = {tinfix=(id, SOME fix)::tinfix}
 
 fun shuntingYardCombineOpPat (p, id) pats ctx opst (v::u::valst) =
-    if p >= 0
-    then shuntingYardPat pats ctx opst ((P.PatInfixApp (u, id, v))::valst) false
-    else shuntingYardPat pats ctx opst ((P.PatInfixApp (v, id, u))::valst) false
+    shuntingYardPat pats ctx opst ((P.PatInfixApp (u, id, v))::valst) false
   | shuntingYardCombineOpPat (p, id) pats ctx opst ((P.PatApp (e::es))::valst) =
     if p >= 0
     then shuntingYardPat pats ctx opst ((P.PatInfixApp (P.PatApp es, id, e))::valst) false
@@ -87,9 +85,7 @@ and elaboratePat (P.PatApp pats, ctx) = shuntingYardPat pats ctx [] [] false
   | elaboratePat (ast, _) = ast
 
 fun shuntingYardCombineOpExp (p, id) exps ctx opst (v::u::valst) =
-    if p >= 0
-    then shuntingYard exps ctx opst ((P.ExpInfixApp (u, id, v))::valst) false
-    else shuntingYard exps ctx opst ((P.ExpInfixApp (v, id, u))::valst) false
+    shuntingYard exps ctx opst ((P.ExpInfixApp (u, id, v))::valst) false
   | shuntingYardCombineOpExp (p, id) exps ctx opst ((P.ExpApp (e::es))::valst) =
     if p >= 0
     then shuntingYard exps ctx opst ((P.ExpInfixApp (P.ExpApp es, id, e))::valst) false

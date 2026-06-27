@@ -62,7 +62,8 @@ datatype typ_pat = TyPatWildcard of inf_typ
 
 type ctx = {env: (string * string list * inf_typ) list, aliases: (string * inf_typ) list}
 
-exception InferenceUnionErr of string * inf_typ * inf_typ
+exception InferenceUnionErr of string * inf_typ * inf_typ * ctx
+exception InferenceErrCtx of string * ctx
 exception InferenceErr of string
 
 val globalCount = ref 0
@@ -174,7 +175,7 @@ fun union tyx tyy (ctx as {aliases, ...}) =
          | (InfTypNever, tyy) => Ok ()
          | (InfTypUnbound (name, rf), tyy) =>
            if occurs tyx tyy
-           then Err ("No such recursive evil allowed", tyx, tyy)
+           then Err ("No such recursive evil allowed", tyx, tyy, ctx)
            else (rf := SOME tyy; Ok ())
          | (tyx, InfTypUnbound (name, rf)) => union tyy tyx ctx
          | (InfTypConstr (varsl, idsl), InfTypConstr (varsr, idsr)) =>
@@ -186,18 +187,18 @@ fun union tyx tyy (ctx as {aliases, ...}) =
                                            (varsl, varsr))) andalso
               ListPair.all (op =) (idsl, idsr)
            then Ok ()
-           else Err ("Different type constructors", tyx, tyy)
+           else Err ("Different type constructors", tyx, tyy, ctx)
          | (InfTypFun (appl, restl), InfTypFun (appr, restr)) =>
            Result.seq (Ok ()) [union appl appr ctx, union restl restr ctx]
          | (InfTypRecord rowsl, InfTypRecord rowsr) =>
            if List.length rowsl <> List.length rowsr
-           then Err ("Different number of fields in record types", tyx, tyy)
+           then Err ("Different number of fields in record types", tyx, tyy, ctx)
            else Result.seq (Ok ()) (List.map (fn ((nx,tx), (ny,ty)) =>
                                                  if nx = ny
                                                  then union tx ty ctx
-                                                 else Err ("Record field names did not match", tyx, tyy))
+                                                 else Err ("Record field names did not match", tyx, tyy, ctx))
                                              (ListPair.zip (rowsl, rowsr)))
-         | _ => Err ("Unhandled union/Wrong type", tyx, tyy)
+         | _ => Err ("Unhandled union/Wrong type", tyx, tyy, ctx)
     end
 
 fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref NONE))
@@ -213,8 +214,7 @@ fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref N
        | NONE => TyPatId (lid, InfTypUnbound (gensym (), ref NONE)))
   | inferPat (P.PatApp [], ctx as {env, ...}) = raise InferenceErr "Empty Application is impossible"
   | inferPat (P.PatApp pats, ctx as {env, ...}) =
-    let val pats = List.rev pats
-        val pat = inferPat (List.hd pats, ctx)
+    let val pat = inferPat (List.hd pats, ctx)
         val pats = List.tl pats
     in
         #1 (List.foldl (fn (P.PatId (b, lid), (accp, accty)) =>
@@ -232,11 +232,13 @@ fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref N
     let val patl = inferPat (patl, ctx)
         val patr = inferPat (patr, ctx)
     in case List.find (fn (n, _, _) => n = opr) env of
-           SOME (_, vars, ty) =>
-           (case union (makeFun [getFunRight ty, getPatTyp patr, getPatTyp patl]) ty ctx of
-                Ok () => TyPatInfixConstr (patl, opr, patr, getFunRight ty)
+           SOME (_, vars, InfTypFun (InfTypRecord [(_, lty), (_, rty)], ty)) =>
+           (case Result.seq (Ok ()) [union lty (getPatTyp patl) ctx,
+                                     union rty (getPatTyp patr) ctx] of
+                Ok () => TyPatInfixConstr (patl, opr, patr, ty)
               | Err err => raise InferenceUnionErr err)
-         | NONE => raise InferenceErr ("Expected an existing id in infix pattern constructor: " ^ opr)
+         | NONE => raise InferenceErr ("Expected an existing id in infix pattern constructor, not: " ^ opr)
+         | _ => raise InferenceErr ("Expected a proper infix pattern constructor, not: " ^ opr)
     end
   | inferPat (P.PatLayered (b, id, SOME typ, pat), ctx) =
     let val ty = makeInfTyp typ
@@ -421,6 +423,8 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
     end
 
 and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix functions should be impossible"
+  | inferFunDecl (P.DeclFunInfixOne [], _) = raise InferenceErr "Empty infix functions should be impossible"
+  | inferFunDecl (P.DeclFunInfixMany [], _) = raise InferenceErr "Empty infix functions should be impossible"
   | inferFunDecl (P.DeclFunNonfix ((opr, id, pats, typ, exp)::fs), ctx as {env, aliases}) =
     let val fty = InfTypUnbound (gensym (), ref NONE)
         val (f, fid, fsig) =
@@ -453,7 +457,7 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                                   val exp = inferExp (exp, {env=env, aliases=aliases})
                               in (case Result.seq (if fid = id
                                                    then Ok ()
-                                                   else Err ("Function names should match in guards", fsig, fsigr))
+                                                   else Err ("Function names should match in guards", fsig, fsigr, ctx))
                                                   (List.map (fn (tl, tr) => union tl tr ctx)
                                                             [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
                                       Ok () => ((id, pats, fty, exp))
@@ -496,7 +500,7 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                                   val exp = inferExp (exp, {env=env, aliases=aliases})
                               in (case Result.seq (if fid = id
                                                    then Ok ()
-                                                   else Err ("Function names should match in guards", fsig, fsigr))
+                                                   else Err ("Function names should match in guards", fsig, fsigr, ctx))
                                                   (List.map (fn (tl, tr) => union tl tr ctx)
                                                             [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
                                       Ok () => ((patl, id, patr, fty, exp))
@@ -541,7 +545,7 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                                   val exp = inferExp (exp, {env=env, aliases=aliases})
                               in (case Result.seq (if fid = id
                                                    then Ok ()
-                                                   else Err ("Function names should match in guards", fsig, fsigr))
+                                                   else Err ("Function names should match in guards", fsig, fsigr, ctx))
                                                   (List.map (fn (tl, tr) => union tl tr ctx)
                                                             [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
                                       Ok () => ((patl, id, patr, pats, fty, exp))

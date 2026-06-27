@@ -14,5 +14,5 @@ val _ = PolyML.make "inferencer"
 fun doAll s = Result.map Inferencer.infer (Result.map Elaborator.elaborate (Parser.parse Parser.coreDecl s))
 *)
 
+(* TODO: Polymorphics *)
 (* TODO: Combinable errors *)
-(* TODO: Proper Infixes in Elaborator *)

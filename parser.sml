@@ -295,6 +295,8 @@ val coreVar = ignoreLeft (ch #"'") (map (fn ls => String.implode (List.concat ls
 val coreLongId = map List.concat (chain [map (fn x => [x]) coreId, many (ignoreLeft (ch #".") coreId)])
 val coreLab = choose [coreId, map Int.toString conNonZeroNum]
 
+fun coreExclLongId excl = check (fn [s] => List.all (fn excl => String.compare (s, excl) <> EQUAL) excl
+                            | _ => true) coreLongId
 val coreNonStarLongId = check (fn [s] => String.compare (s, "*") <> EQUAL
                             | _ => true) coreLongId
 val coreNonEqLongId = check (fn [s] => String.compare (s, "=") <> EQUAL
@@ -342,6 +344,23 @@ and coreAppTyp ctx =
                (choose [map TypFun (chain2 (coreTupleTyp, ignoreLeft (between someSpace (str "->") someSpace) coreTyp)),
                         coreTupleTyp]) ctx
 and coreTyp ctx = coreAppTyp ctx
+
+and coreNonEqConstrTyp ctx =
+    memoizeTyp "coreNonEqConstrTyp"
+               (choose [map TypConstr (chain2 (listBetween (ch #"(") coreTyp many #"," (ch #")"), (ignoreLeft space (coreExclLongId ["=", "*"])))),
+                        map TypConstr (chain2 (chain [map TypConstr (chain2 (const [], (coreExclLongId ["=", "*"])))], (ignoreLeft space (coreExclLongId ["=", "*"])))),
+                        map TypConstr (chain2 (chain [coreATTyp], (ignoreLeft space (coreExclLongId ["=", "*"])))),
+                        map TypConstr (chain2 (const [], (coreExclLongId ["=", "*"]))),
+                        coreATTyp]) ctx
+and coreNonEqTupleTyp ctx =
+    memoizeTyp "coreNonEqTupleTyp"
+               (choose [map (fn typs => TypRecord (List.rev (#2 (List.foldl (fn (typ, (n, acc)) => (n+1, (Int.toString n, typ)::acc)) (1, []) typs)))) (oneSep coreNonEqConstrTyp some (ignoreLeft (spacedCh #"*") coreNonEqConstrTyp)),
+                        coreNonEqConstrTyp]) ctx
+and coreNonEqAppTyp ctx =
+    memoizeTyp "coreNonEqAppTyp"
+               (choose [map TypFun (chain2 (coreNonEqTupleTyp, ignoreLeft (between someSpace (str "->") someSpace) coreNonEqTyp)),
+                        coreNonEqTupleTyp]) ctx
+and coreNonEqTyp ctx = coreNonEqAppTyp ctx
 
 fun coreMatch ctx = oneSep (chain2 (ignoreRight corePat (between someSpace (str "=>") someSpace), coreExp))
                            many
@@ -397,18 +416,18 @@ and coreValBind ctx = chain3 (opt false (map (fn _ => true) (ignoreRight (str "r
 and coreFunBindNonFix ctx = (chain5 (opt false (map (fn _ => true) (ignoreRight (str "op") someSpace)),
                                      coreId,
                                      some (ignoreLeft space coreNonEqPat),
-                                     opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                     opt NONE (map SOME (ignoreLeft (spacedCh #":") coreNonEqTyp)),
                                      ignoreLeft (spacedCh #"=") coreExp)) ctx
 and coreFunBindInfixOne ctx = (chain5 (coreNonEqPat,
                                        ignoreLeft space coreId,
                                        ignoreLeft space coreNonEqPat,
-                                       opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                       opt NONE (map SOME (ignoreLeft (spacedCh #":") coreNonEqTyp)),
                                        ignoreLeft (spacedCh #"=") coreExp)) ctx
 and coreFunBindInfixMany ctx = (chain6 (ignoreLeft (spacedCh #"(") coreNonEqPat,
                                         ignoreLeft space coreId,
                                         between space coreNonEqPat (spacedCh #")"),
                                         some (ignoreLeft space coreNonEqPat),
-                                        opt NONE (map SOME (ignoreLeft (spacedCh #":") coreTyp)),
+                                        opt NONE (map SOME (ignoreLeft (spacedCh #":") coreNonEqTyp)),
                                         ignoreLeft (spacedCh #"=") coreExp)) ctx
 
 and coreFunBind ctx = choose [map DeclFunInfixOne (oneSep coreFunBindInfixOne many (ignoreLeft (spacedCh #"|") coreFunBindInfixOne)),

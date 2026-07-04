@@ -245,12 +245,7 @@ fun union tyx tyy (ctx as {aliases, ...}) =
            (tyx, InfTypNever) => Ok ()
          | (InfTypNever, tyy) => Ok ()
          | (tyx, InfTypPoly (vars, tyy)) => union tyx (instantiate (vars, aliases, tyy)) ctx
-         | (InfTypPoly (vars, tyx), tyy) =>
-           let val i = instantiate (vars, aliases, tyx)
-           in
-               PolyML.print (vars, tyx, i);
-               union (instantiate (vars, aliases, tyx)) tyy ctx
-           end
+         | (InfTypPoly (vars, tyx), tyy) => union (instantiate (vars, aliases, tyx)) tyy ctx
          | (InfTypUnbound (name, rf), tyy) =>
            if occurs tyx tyy
            then Err ("No recursive evil allowed", tyx, tyy, ctx)

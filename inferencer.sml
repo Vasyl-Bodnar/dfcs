@@ -22,8 +22,8 @@ datatype typ_pat = TyPatWildcard of inf_typ
                  | InfTypRecord of (string * inf_typ) list
                  | InfTypPoly of string list * inf_typ
                  | InfTypNever (* Does not return i.e. exceptions / Type that does not matter at all *)
-     and typ_decl = TyDeclVal of string list * (bool * typ_pat * typ_exp) list
-                  | TyDeclFun of string list * typ_decl_fun list
+     and typ_decl = TyDeclVal of (bool * typ_pat * typ_exp) list
+                  | TyDeclFun of typ_decl_fun list
                   | TyDeclTyp of (string list * string * inf_typ) list
                   | TyDeclDataTyp of ((string list * string * (string * inf_typ option) list) list) * ((string list * string * inf_typ) list)
                   | TyDeclDataTypRepl of string * longid
@@ -74,7 +74,7 @@ fun gensym () =
     end
 
 fun makeInfTyp (P.TypVar str) = InfTypUnbound (str, ref NONE)
-  | makeInfTyp (P.TypConstr (vars, lid)) = InfTypConstr (List.map makeInfTyp vars, lid)
+  | makeInfTyp (P.TypConstr (tys, lid)) = InfTypConstr (List.map makeInfTyp tys, lid)
   | makeInfTyp (P.TypFun (tyl, tyr)) = InfTypFun (makeInfTyp tyl, makeInfTyp tyr)
   | makeInfTyp (P.TypRecord rows) = InfTypRecord (List.map (fn (s, ty) => (s, makeInfTyp ty)) rows)
 
@@ -109,12 +109,18 @@ fun getPatIdsTyps (TyPatWildcard _) = []
                     [(id, ty)]) rows)
   | getPatIdsTyps (TyPatList (pats, _)) = List.concat (List.map getPatIdsTyps pats)
 
+(* TODO: Might not be ideal in general and in implementation *)
+fun getPolyPatIdsTyps ([], pat) = getPatIdsTyps pat
+  | getPolyPatIdsTyps (vars, pat) = List.map (fn (id, InfTypPoly (othvars, ty)) => (id, InfTypPoly (othvars @ vars, ty))
+                                         | (id, ty) => (id, InfTypPoly (vars, ty)))
+                                         (getPatIdsTyps pat)
+
 fun getExpTyp (TyExpCon (_, ty)) = ty
   | getExpTyp (TyExpValId (_, ty)) = ty
   | getExpTyp (TyExpApp (_, ty)) = ty
   | getExpTyp (TyExpInfixApp (_, _, _, ty)) = ty
   | getExpTyp (TyExpRecord (_, ty)) = ty
-  | getExpTyp (TyExpRecordSelect (_, ty as InfTypFun _)) = ty
+  | getExpTyp (TyExpRecordSelect (_, ty as InfTypFun _)) = ty (* TODO: What if it's unbound or poly *)
   | getExpTyp (TyExpRecordSelect (s, _)) = raise InferenceErr ("Illegal Record Select: #" ^ s)
   | getExpTyp (TyExpList (_, ty)) = ty
   | getExpTyp (TyExpSeq (_, ty)) = ty
@@ -130,6 +136,35 @@ fun getExpTyp (TyExpCon (_, ty)) = ty
 
 fun getFunTyp (InfTypFun (_, ty)) = getFunTyp ty
   | getFunTyp ty = ty
+
+fun polifyPat ([], pat) = pat
+  | polifyPat (vars, TyPatWildcard ty) = TyPatWildcard (InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatCon (c, ty)) = TyPatCon (c, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatId (i, ty)) = TyPatId (i, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatConstr (i, p, ty)) = TyPatConstr (i, p, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatInfixConstr (pl, i, pr, ty)) = TyPatInfixConstr (pl, i, pr, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatLayered (i, p, ty)) = TyPatLayered (i, p, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatRecord (r, ty)) = TyPatRecord (r, InfTypPoly (vars, ty))
+  | polifyPat (vars, TyPatList (l, ty)) = TyPatList (l, InfTypPoly (vars, ty))
+
+fun polifyExp ([], exp) = exp
+  | polifyExp (vars, TyExpCon (c, ty)) = TyExpCon (c, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpValId (i, ty)) = TyExpValId (i, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpApp (e, ty)) = TyExpApp (e, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpInfixApp (el, opr, er, ty)) = TyExpInfixApp (el, opr, er, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpRecord (r, ty)) = TyExpRecord (r, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpRecordSelect (s, ty)) = TyExpRecordSelect (s, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpList (l, ty)) = TyExpList (l, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpSeq (s, ty)) = TyExpSeq (s, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpLocalDecl (d, l, ty)) = TyExpLocalDecl (d, l, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpConj (l, r, ty)) = TyExpConj (l, r, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpDisj (l, r, ty)) = TyExpDisj (l, r, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpExceptionRaise (r, ty)) = TyExpExceptionRaise (r, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpExceptionHandle (p, e, ty)) = TyExpExceptionHandle (p, e, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpCond (b, l, r, ty)) = TyExpCond (b, l, r, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpIter (i, e, ty)) = TyExpIter (i, e, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpMatch (d, e, ty)) = TyExpMatch (d, e, InfTypPoly (vars, ty))
+  | polifyExp (vars, TyExpFn (f, ty)) = TyExpFn (f, InfTypPoly (vars, ty))
 
 fun occurs' (InfTypUnbound (namel, _)) (InfTypUnbound (namer, _)) = namel = namer
   | occurs' (tyx as (InfTypUnbound _)) (InfTypFun (app, rest)) = occurs' tyx app orelse occurs' tyx rest
@@ -153,10 +188,23 @@ fun find (InfTypUnbound (name, rf)) =
        | NONE => InfTypUnbound (name, rf))
   | find ty = ty
 
-fun instantiate (vars, ty) = ty
+fun instantiate (vars, typ as InfTypUnbound (name, _)) =
+    (case List.find (fn n => name = n) vars of
+         SOME _ => InfTypUnbound (gensym (), ref NONE)
+       | NONE => typ)
+  | instantiate (vars, InfTypFun (tyl, tyr)) = InfTypFun (instantiate (vars, tyl), instantiate (vars, tyr))
+  | instantiate (vars, InfTypRecord rows) = InfTypRecord (List.map (fn (n, ty) => (n, instantiate (vars, ty))) rows)
+  | instantiate (vars, InfTypPoly (othvars, typ)) = instantiate (othvars @ vars, typ)
+  | instantiate (_, typ) = typ
 
 fun qualify (typ as InfTypUnbound _) aliases = typ
-  | qualify (typ as InfTypConstr (vars, lid)) aliases =
+  | qualify (typ as InfTypConstr ([], lid)) aliases =
+    let val id = (String.concatWith "." lid)
+    in case List.find (fn (n, _) => id = n) aliases of
+           SOME (_, ty) => qualify ty aliases
+         | NONE => typ
+    end
+  | qualify (typ as InfTypConstr (tys, lid)) aliases = (* TODO: A little more complicated than that *)
     let val id = (String.concatWith "." lid)
     in case List.find (fn (n, _) => id = n) aliases of
            SOME (_, ty) => qualify ty aliases
@@ -164,7 +212,7 @@ fun qualify (typ as InfTypUnbound _) aliases = typ
     end
   | qualify (InfTypFun (tyl, tyr)) aliases = InfTypFun (qualify tyl aliases, qualify tyr aliases)
   | qualify (InfTypRecord rows) aliases = InfTypRecord (List.map (fn (n, typ) => (n, qualify typ aliases)) rows)
-  | qualify (InfTypPoly (lid, typ)) aliases = InfTypPoly (lid, qualify typ aliases)
+  | qualify (InfTypPoly (vars, typ)) aliases = InfTypPoly (vars, qualify typ aliases)
   | qualify InfTypNever aliases = InfTypNever
 
 fun union tyx tyy (ctx as {aliases, ...}) =
@@ -173,19 +221,20 @@ fun union tyx tyy (ctx as {aliases, ...}) =
     in case (tyx, tyy) of
            (tyx, InfTypNever) => Ok ()
          | (InfTypNever, tyy) => Ok ()
-         | (InfTypPoly (vars, tyx), tyy) => union tyy (instantiate (vars, tyx)) ctx
+         | (tyx, InfTypPoly (vars, tyy)) => union tyx (instantiate (vars, tyy)) ctx
+         | (InfTypPoly (vars, tyx), tyy) => union (instantiate (vars, tyx)) tyy ctx
          | (InfTypUnbound (name, rf), tyy) =>
            if occurs tyx tyy
            then Err ("No such recursive evil allowed", tyx, tyy, ctx)
            else (rf := SOME tyy; Ok ())
          | (tyx, InfTypUnbound (name, rf)) => union tyy tyx ctx
-         | (InfTypConstr (varsl, idsl), InfTypConstr (varsr, idsr)) =>
-           if List.length varsl = List.length varsr andalso
+         | (InfTypConstr (tysl, idsl), InfTypConstr (tysr, idsr)) =>
+           if List.length tysl = List.length tysr andalso
               List.length idsl = List.length idsr   andalso
               Result.isOk (Result.seq (Ok ())
                                       (ListPair.map
                                            (fn (x,y) => union x y ctx)
-                                           (varsl, varsr))) andalso
+                                           (tysl, tysr))) andalso
               ListPair.all (op =) (idsl, idsr)
            then Ok ()
            else Err ("Different type constructors", tyx, tyy, ctx)
@@ -333,7 +382,7 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
   | inferExp (P.ExpApp exps, ctx as {env, ...}) =
     let val ty = InfTypUnbound (gensym (), ref NONE)
         val exps = List.rev (List.map (fn ex => inferExp (ex, ctx)) exps)
-    in case exps of
+    in case exps of (* TODO: What if unbound or poly *)
            [TyExpRecordSelect (s, _), record as TyExpRecord (rows, rty)] =>
            (case List.find (fn (n, _) => s = n) rows of
                 SOME (_, exp) => TyExpApp ([TyExpRecordSelect (s, InfTypFun (rty, getExpTyp exp)), record], getExpTyp exp)
@@ -353,7 +402,7 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
         val expl = inferExp (expl, ctx)
         val expr = inferExp (expr, ctx)
     in case List.find (fn (n, _) => n = opr) env of
-           SOME (_, fty) => (* TODO: Instantiate future polymorphic types too *)
+           SOME (_, fty) =>
            let val tyl = getExpTyp expl
                val tyr = getExpTyp expr
            in case (union fty (InfTypFun (tyl, InfTypFun (tyr, ty)))) ctx of
@@ -438,7 +487,7 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
             in (case Result.seq (Ok ())
                                 (List.map (fn (tl, tr) => union tl tr ctx)
                                           [(fty, typ), (fty, getExpTyp exp)]) of
-                    Ok () => ((id, pats, fty, exp),
+                    Ok () => ((id, pats, typ, exp),
                               id,
                               fsig)
                   | Err err => raise InferenceUnionErr err)
@@ -550,22 +599,25 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
 
 and inferDecl (P.DeclVal (vars, vals), ctx) =
     let val (vals, ctx) = List.foldl (fn ((b, pat, exp), (acc, ctx as {env, aliases})) =>
-                                         let val pat = inferPat (pat, ctx)
-                                             val exp = inferExp (exp, ctx)
-                                             val patidstys = getPatIdsTyps pat
+                                         let val pat = polifyPat (vars, inferPat (pat, ctx))
+                                             val exp = polifyExp (vars, inferExp (exp, ctx))
+                                             val patidstys = getPolyPatIdsTyps (vars, pat)
                                              val ctx = {env=patidstys@env, aliases=aliases}
                                          in case union (getPatTyp pat) (getExpTyp exp) ctx of
                                                 Ok () => ((b, pat, exp)::acc, ctx)
                                               | Err err => raise InferenceUnionErr err
                                          end) ([], ctx) vals
     in
-        (TyDeclVal (vars, List.rev vals), ctx)
+        (TyDeclVal (List.rev vals), ctx)
     end
   | inferDecl (P.DeclFun (vars, funs), ctx as {env, aliases}) =
     let val (funs, fsigs) = ListPair.unzip (List.map (fn f => inferFunDecl (f, ctx)) funs)
+        val fsigs = (case vars of
+                         [] => fsigs
+                       | _ => List.map (fn (id, fty) => (id, InfTypPoly (vars, fty))) fsigs)
         val ctx = {env=fsigs @ env, aliases=aliases}
     in
-        (TyDeclFun (vars, funs), ctx)
+        (TyDeclFun funs, ctx)
     end
   | inferDecl (P.DeclTyp typs, {env, aliases}) =
     let val (typs, als) = ListPair.unzip (List.map (fn (vars, id, ty) =>

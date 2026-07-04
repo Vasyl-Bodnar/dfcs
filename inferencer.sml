@@ -188,15 +188,6 @@ fun find (InfTypUnbound (name, rf)) =
        | NONE => InfTypUnbound (name, rf))
   | find ty = ty
 
-fun instantiate (vars, typ as InfTypUnbound (name, _)) =
-    (case List.find (fn n => name = n) vars of
-         SOME _ => InfTypUnbound (gensym (), ref NONE)
-       | NONE => typ)
-  | instantiate (vars, InfTypFun (tyl, tyr)) = InfTypFun (instantiate (vars, tyl), instantiate (vars, tyr))
-  | instantiate (vars, InfTypRecord rows) = InfTypRecord (List.map (fn (n, ty) => (n, instantiate (vars, ty))) rows)
-  | instantiate (vars, InfTypPoly (othvars, typ)) = instantiate (othvars @ vars, typ)
-  | instantiate (_, typ) = typ
-
 fun qualify (typ as InfTypUnbound _) aliases = typ
   | qualify (typ as InfTypConstr ([], lid)) aliases =
     let val id = (String.concatWith "." lid)
@@ -215,17 +206,54 @@ fun qualify (typ as InfTypUnbound _) aliases = typ
   | qualify (InfTypPoly (vars, typ)) aliases = InfTypPoly (vars, qualify typ aliases)
   | qualify InfTypNever aliases = InfTypNever
 
+fun instantiate' (vars, aliases, maps, typ as InfTypUnbound (name, rf)) =
+    (case !rf of
+         NONE => (case List.find (fn n => name = n) vars of
+                      SOME n =>
+                      (case List.find (fn (n, _) => name = n) maps of
+                           SOME (_, ty)  => (ty, maps)
+                         | NONE => let val ty = InfTypUnbound (gensym (), ref NONE)
+                                   in (ty, (n, ty)::maps)
+                                   end)
+                    | NONE => (typ, maps))
+       | SOME _ => instantiate' (vars, aliases, maps, qualify (find typ) aliases)
+    )
+  | instantiate' (vars, aliases, maps, InfTypFun (tyl, tyr)) =
+    let val (tyl, lmaps) = instantiate' (vars, aliases, maps, tyl)
+        val (tyr, rmaps) = instantiate' (vars, aliases, lmaps, tyr)
+    in
+        (InfTypFun (tyl, tyr), rmaps)
+    end
+  | instantiate' (vars, aliases, maps, InfTypRecord rows) =
+    let val (rows, maps) =
+            List.foldl (fn ((n, ty), (acc, maps)) =>
+                           let val (ty, maps) = instantiate' (vars, aliases, maps, ty)
+                           in ((n, ty)::acc, maps)
+                           end) ([], maps) rows
+    in
+        (InfTypRecord (List.rev rows), maps)
+    end
+  | instantiate' (vars, aliases, maps, InfTypPoly (othvars, typ)) = instantiate' (othvars @ vars, aliases, maps, typ)
+  | instantiate' (_, aliases, maps, typ) = (typ, maps)
+
+fun instantiate (vars, aliases, typ) = #1 (instantiate' (vars, aliases, [], typ))
+
 fun union tyx tyy (ctx as {aliases, ...}) =
     let val tyx = qualify (find tyx) aliases
         val tyy = qualify (find tyy) aliases
     in case (tyx, tyy) of
            (tyx, InfTypNever) => Ok ()
          | (InfTypNever, tyy) => Ok ()
-         | (tyx, InfTypPoly (vars, tyy)) => union tyx (instantiate (vars, tyy)) ctx
-         | (InfTypPoly (vars, tyx), tyy) => union (instantiate (vars, tyx)) tyy ctx
+         | (tyx, InfTypPoly (vars, tyy)) => union tyx (instantiate (vars, aliases, tyy)) ctx
+         | (InfTypPoly (vars, tyx), tyy) =>
+           let val i = instantiate (vars, aliases, tyx)
+           in
+               PolyML.print (vars, tyx, i);
+               union (instantiate (vars, aliases, tyx)) tyy ctx
+           end
          | (InfTypUnbound (name, rf), tyy) =>
            if occurs tyx tyy
-           then Err ("No such recursive evil allowed", tyx, tyy, ctx)
+           then Err ("No recursive evil allowed", tyx, tyy, ctx)
            else (rf := SOME tyy; Ok ())
          | (tyx, InfTypUnbound (name, rf)) => union tyy tyx ctx
          | (InfTypConstr (tysl, idsl), InfTypConstr (tysr, idsr)) =>
@@ -380,8 +408,7 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
          SOME (_, ty) => TyExpValId (lid, ty)
        | NONE => raise InferenceErr ("Expected an existing variable for expression id: " ^ (String.concatWith "." lid)))
   | inferExp (P.ExpApp exps, ctx as {env, ...}) =
-    let val ty = InfTypUnbound (gensym (), ref NONE)
-        val exps = List.rev (List.map (fn ex => inferExp (ex, ctx)) exps)
+    let val exps = List.rev (List.map (fn ex => inferExp (ex, ctx)) exps)
     in case exps of (* TODO: What if unbound or poly *)
            [TyExpRecordSelect (s, _), record as TyExpRecord (rows, rty)] =>
            (case List.find (fn (n, _) => s = n) rows of
@@ -389,7 +416,8 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
               | NONE => raise InferenceErr "Record Select on a wrong record")
          | (TyExpRecordSelect _)::_ => raise InferenceErr "Illegal Record Select without a record"
          | f::exps =>
-           let val fty = getExpTyp f
+           let val ty = InfTypUnbound (gensym (), ref NONE)
+               val fty = getExpTyp f
                val appty = List.foldr (fn (ex, acc) => InfTypFun (getExpTyp ex, acc)) ty exps
            in case union fty appty ctx of
                   Ok () => TyExpApp (f::exps, ty)

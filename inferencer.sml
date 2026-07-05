@@ -666,8 +666,12 @@ and inferDecl (P.DeclVal (vars, vals), ctx) =
                                                   List.map (fn (cid, SOME ty) => (cid, makeFun [InfTypConstr ([], [id]), ty])
                                                            | (cid, NONE) => (cid, InfTypConstr ([], [id]))) cons
                                               | (vars, id, cons) =>
-                                                List.map (fn (cid, SOME ty) => (cid, InfTypPoly (vars, makeFun [InfTypConstr ([], [id]), ty]))
-                                                         | (cid, NONE) => (cid, InfTypPoly (vars, InfTypConstr ([], [id])))) cons) data))@env,
+                                                let val constrs = List.map (fn var => InfTypUnbound (var, ref NONE)) vars
+                                                in
+                                                    List.map (fn (cid, SOME ty) => (cid, InfTypPoly (vars, makeFun [InfTypConstr (constrs, [id]), ty]))
+                                                             | (cid, NONE) => (cid, InfTypPoly (vars, InfTypConstr (constrs, [id])))) cons
+                                                end) data))@env,
+
                    aliases=als@aliases}
     in
         (TyDeclDataTyp (data, typs), ctx)

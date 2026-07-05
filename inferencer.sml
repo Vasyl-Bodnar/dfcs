@@ -390,7 +390,7 @@ and inferMatches (matches : (P.pat * P.exp) list, ctx : ctx) : (typ_pat * typ_ex
     in case res of
            Ok () => ()
          | Err err => raise InferenceUnionErr err;
-       (matches, exp_ty)
+       (matches, makeFun [exp_ty, pat_ty])
     end
 
 and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], ["int"]))

@@ -15,4 +15,6 @@ fun doAll s = Result.map Inferencer.infer (Result.map Elaborator.elaborate (Pars
 *)
 
 (* TODO: Polymorphics *)
+(* TODO: Exhaustion/Redundant match cases *)
 (* TODO: Combinable errors *)
+(* TODO: ANF *)

@@ -81,6 +81,9 @@ fun makeInfTyp (P.TypVar str) = InfTypUnbound (str, ref NONE)
 fun makeFun [] = raise InferenceErr "Cannot turn zero types into a function type"
   | makeFun (ty::typs) = List.foldl InfTypFun ty typs
 
+fun makePair [] = raise InferenceErr "Cannot turn zero types into a pair type"
+  | makePair typs = InfTypRecord (List.rev (#2 (List.foldl (fn (t, (n, acc)) => (n+1, (Int.toString n, t)::acc)) (1, []) typs)))
+
 fun getFunRight (InfTypFun (_, r)) = r
   | getFunRight _ = raise InferenceErr "Cannot get result as this is not a function"
 
@@ -92,6 +95,14 @@ fun getPatTyp (TyPatWildcard ty) = ty
   | getPatTyp (TyPatLayered (_, _, ty)) = ty
   | getPatTyp (TyPatRecord (_, ty)) = ty
   | getPatTyp (TyPatList (_, ty)) = ty
+
+fun makePatPair [] = raise InferenceErr "Cannot turn zero patterns into a pair"
+  | makePatPair pats =
+    let val typs = List.map getPatTyp pats
+        val rows = List.rev (#2 (List.foldl (fn (pat, (n, acc)) => (n+1, (TyPatRecordEntryA (Int.toString n, pat, getPatTyp pat))::acc)) (1, []) pats))
+    in
+        TyPatRecord (rows, makePair typs)
+    end
 
 fun getPatIdsTyps (TyPatWildcard _) = []
   | getPatIdsTyps (TyPatCon _) = []
@@ -112,8 +123,8 @@ fun getPatIdsTyps (TyPatWildcard _) = []
 (* TODO: Might not be ideal in general and in implementation *)
 fun getPolyPatIdsTyps ([], pat) = getPatIdsTyps pat
   | getPolyPatIdsTyps (vars, pat) = List.map (fn (id, InfTypPoly (othvars, ty)) => (id, InfTypPoly (othvars @ vars, ty))
-                                         | (id, ty) => (id, InfTypPoly (vars, ty)))
-                                         (getPatIdsTyps pat)
+                                             | (id, ty) => (id, InfTypPoly (vars, ty)))
+                                             (getPatIdsTyps pat)
 
 fun getExpTyp (TyExpCon (_, ty)) = ty
   | getExpTyp (TyExpValId (_, ty)) = ty
@@ -304,13 +315,15 @@ fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref N
     let val patl = inferPat (patl, ctx)
         val patr = inferPat (patr, ctx)
     in case List.find (fn (n, _) => n = opr) env of
-           SOME (_, InfTypFun (InfTypRecord [(_, lty), (_, rty)], ty)) => (* TODO: What about unbound and poly *)
-           (case Result.seq (Ok ()) [union lty (getPatTyp patl) ctx,
-                                     union rty (getPatTyp patr) ctx] of
-                Ok () => TyPatInfixConstr (patl, opr, patr, ty)
-              | Err err => raise InferenceUnionErr err)
+           SOME (_, fty) =>
+           let val ty = InfTypUnbound (gensym (), ref NONE)
+               val tyl = getPatTyp patl
+               val tyr = getPatTyp patr
+           in case (union fty (InfTypFun (makePair [tyl, tyr], ty))) ctx of
+                  Ok () => TyPatInfixConstr (patl, opr, patr, ty)
+                | Err err => raise InferenceUnionErr err
+           end
          | NONE => raise InferenceErr ("Expected an existing id in infix pattern constructor, not: " ^ opr)
-         | _ => raise InferenceErr ("Expected a proper infix pattern constructor, not: " ^ opr)
     end
   | inferPat (P.PatLayered (b, id, SOME typ, pat), ctx) =
     let val ty = makeInfTyp typ
@@ -428,7 +441,7 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
            SOME (_, fty) =>
            let val tyl = getExpTyp expl
                val tyr = getExpTyp expr
-           in case (union fty (InfTypFun (tyl, InfTypFun (tyr, ty)))) ctx of
+           in case (union fty (InfTypFun (makePair [tyl, tyr], ty))) ctx of
                   Ok () => TyExpInfixApp (expl, opr, expr, ty)
                 | Err err => raise InferenceUnionErr err
            end
@@ -543,9 +556,10 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                                     | NONE => InfTypNever
                 val patl = inferPat (patl, ctx)
                 val patr = inferPat (patr, ctx)
+                val patin = makePatPair [patl, patr]
                 val pats = List.map (fn pat => inferPat (pat, ctx)) pats
-                val patidstys = List.concat (List.map getPatIdsTyps (patl::patr::pats))
-                val pattys = List.map getPatTyp (patl::patr::pats)
+                val patidstys = List.concat (List.map getPatIdsTyps (patin::pats))
+                val pattys = List.map getPatTyp (patin::pats)
                 val fsig = makeFun (fty::pattys)
                 val env = patidstys @ (id, fsig)::env
                 val exp = inferExp (exp, {env=env, aliases=aliases})
@@ -562,9 +576,10 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                                                       | NONE => InfTypNever
                                   val patl = inferPat (patl, ctx)
                                   val patr = inferPat (patr, ctx)
+                                  val patin = makePatPair [patl, patr]
                                   val pats = List.map (fn pat => inferPat (pat, ctx)) pats
-                                  val patidstys = List.concat (List.map getPatIdsTyps (patl::patr::pats))
-                                  val pattys = List.map getPatTyp (patl::patr::pats)
+                                  val patidstys = List.concat (List.map getPatIdsTyps (patin::pats))
+                                  val pattys = List.map getPatTyp (patin::pats)
                                   val fsigr = makeFun (fty::pattys)
                                   val env = patidstys @ (id, fsigr)::env
                                   val exp = inferExp (exp, {env=env, aliases=aliases})
@@ -689,7 +704,7 @@ and inferDecl (P.DeclVal (vars, vals), ctx) =
   | inferDecl (P.DeclEmpty, ctx) = (TyDeclEmpty, ctx)
 
 fun infer (ast, _) =
-    let val env = [("+", makeFun [InfTypConstr ([], ["int"]), InfTypConstr ([], ["int"]), InfTypConstr ([], ["int"])])]
+    let val env = [("+", makeFun [InfTypConstr ([], ["int"]), makePair [InfTypConstr ([], ["int"]), InfTypConstr ([], ["int"])]])]
     in
         inferDecl (ast, {env=env, aliases=[]})
     end

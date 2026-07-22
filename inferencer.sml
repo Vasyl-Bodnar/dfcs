@@ -177,6 +177,24 @@ fun polifyExp ([], exp) = exp
   | polifyExp (vars, TyExpMatch (d, e, ty)) = TyExpMatch (d, e, InfTypPoly (vars, ty))
   | polifyExp (vars, TyExpFn (f, ty)) = TyExpFn (f, InfTypPoly (vars, ty))
 
+fun allowedValueExp (TyExpCon (c, ty)) = true
+  | allowedValueExp (TyExpValId (i, ty)) = true
+  | allowedValueExp (TyExpApp (e, ty)) = false
+  | allowedValueExp (TyExpInfixApp (el, opr, er, ty)) = (allowedValueExp el) andalso (allowedValueExp el)
+  | allowedValueExp (TyExpRecord (r, ty)) = List.all (fn (_, e) => allowedValueExp e) r
+  | allowedValueExp (TyExpRecordSelect (s, ty)) = true
+  | allowedValueExp (TyExpList (l, ty)) = List.all allowedValueExp l
+  | allowedValueExp (TyExpSeq (s, ty)) = List.all allowedValueExp s
+  | allowedValueExp (TyExpLocalDecl (d, l, ty)) = false (* TODO: Double-check what should be value restricted *)
+  | allowedValueExp (TyExpConj (l, r, ty)) = (allowedValueExp l) andalso (allowedValueExp r)
+  | allowedValueExp (TyExpDisj (l, r, ty)) = (allowedValueExp l) andalso (allowedValueExp r)
+  | allowedValueExp (TyExpExceptionRaise (r, ty)) = allowedValueExp r
+  | allowedValueExp (TyExpExceptionHandle (p, e, ty)) = (allowedValueExp p) andalso (List.all (fn (_, e) => allowedValueExp e) e)
+  | allowedValueExp (TyExpCond (b, l, r, ty)) = (allowedValueExp b) andalso (allowedValueExp l) andalso (allowedValueExp r)
+  | allowedValueExp (TyExpIter (i, e, ty)) = (allowedValueExp i) andalso (allowedValueExp e)
+  | allowedValueExp (TyExpMatch (d, e, ty)) = (allowedValueExp d) andalso (List.all (fn (_, e) => allowedValueExp e) e)
+  | allowedValueExp (TyExpFn (f, ty)) = List.all (fn (_, e) => allowedValueExp e) f
+
 fun occurs' (InfTypUnbound (namel, _)) (InfTypUnbound (namer, _)) = namel = namer
   | occurs' (tyx as (InfTypUnbound _)) (InfTypFun (app, rest)) = occurs' tyx app orelse occurs' tyx rest
   | occurs' (tyx as (InfTypUnbound _)) (InfTypRecord rows) = List.exists (fn (_, tyy) => occurs' tyx tyy) rows
@@ -387,12 +405,18 @@ fun inferPat (P.PatWildcard, _) = TyPatWildcard (InfTypUnbound (gensym (), ref N
          | Err err => raise InferenceUnionErr err
     end
 
-and inferMatches (matches : (P.pat * P.exp) list, ctx : ctx) : (typ_pat * typ_exp) list * inf_typ =
+and inferMatches (matches : (P.pat * P.exp) list, ctx as {env, aliases} : ctx) : (typ_pat * typ_exp) list * inf_typ =
     let val pat_ty = InfTypUnbound (gensym (), ref NONE)
         val exp_ty = InfTypUnbound (gensym (), ref NONE)
         val matches = List.map (fn (pa, ex) =>
-                                   (inferPat (pa, ctx),
-                                    inferExp (ex, ctx))) matches
+                                   let val pa = inferPat (pa, ctx)
+                                       val patidstys = getPatIdsTyps pa
+                                       val env = patidstys @ env
+                                       val ex = inferExp (ex, {env=env, aliases=aliases})
+                                   in
+                                       (pa, ex)
+                                   end)
+                               matches
         val res = Result.seq (Ok ())
                              (List.map (fn (pa, ex) =>
                                            let val pa_ty = getPatTyp pa
@@ -497,7 +521,14 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
     in
         TyExpMatch (inferExp (exp, ctx), matches, ty)
     end
-  | inferExp (P.ExpFn matches, ctx) = TyExpFn (inferMatches (matches, ctx))
+  | inferExp (P.ExpFn matches, ctx) =
+    let val (matches, ty) = inferMatches (matches, ctx)
+        val ty = if List.all (fn (_, e) => allowedValueExp e) matches
+                 then ty
+                 else ty
+    in
+        TyExpFn (matches, ty)
+    end
   | inferExp (P.ExpTypeAnnote (exp, typ), ctx) =
     let val exp = inferExp (exp, ctx)
         val ty = getExpTyp exp

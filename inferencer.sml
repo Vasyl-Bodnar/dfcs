@@ -493,9 +493,10 @@ and inferExp (P.ExpCon (P.ConInt x), _) = TyExpCon (ConInt x, InfTypConstr ([], 
          | Err err => raise InferenceUnionErr err
     end
 
+(* TODO: Mutual recursion *)
 and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix functions should be impossible"
-  | inferFunDecl (P.DeclFunInfixOne [], _) = raise InferenceErr "Empty infix functions should be impossible"
-  | inferFunDecl (P.DeclFunInfixMany [], _) = raise InferenceErr "Empty infix functions should be impossible"
+  | inferFunDecl (P.DeclFunInfixOne _, _) = raise InferenceErr "Impossible! Did not expect InfixOne function at this point"
+  | inferFunDecl (P.DeclFunInfixMany [], _) = raise InferenceErr "Empty infix function should be impossible"
   | inferFunDecl (P.DeclFunNonfix ((opr, id, pats, typ, exp)::fs), ctx as {env, aliases}) =
     let val fty = InfTypUnbound (gensym (), ref NONE)
         val (f, fid, fsig) =
@@ -534,47 +535,6 @@ and inferFunDecl (P.DeclFunNonfix [], _) = raise InferenceErr "Empty nonfix func
                               end) fs
     in
         (TyDeclFunNonfix (f::fs), (fid, fsig))
-    end
-  | inferFunDecl (P.DeclFunInfixOne ((patl, id, patr, typ, exp)::fs), ctx as {env, aliases}) =
-    let val fty = InfTypUnbound (gensym (), ref NONE)
-        val (f, fid, fsig) =
-            let val typ = case typ of SOME typ => makeInfTyp typ
-                                    | NONE => InfTypNever
-                val patl = inferPat (patl, ctx)
-                val patr = inferPat (patr, ctx)
-                val patidstys = List.concat (List.map getPatIdsTyps [patl, patr])
-                val pattys = List.map getPatTyp [patl, patr]
-                val fsig = makeFun (fty::pattys)
-                val env = patidstys @ (id, fsig)::env
-                val exp = inferExp (exp, {env=env, aliases=aliases})
-            in (case Result.seq (Ok ())
-                                (List.map (fn (tl, tr) => union tl tr ctx)
-                                          [(fty, typ), (fty, getExpTyp exp)]) of
-                    Ok () => ((patl, id, patr, fty, exp),
-                              id,
-                              fsig)
-                  | Err err => raise InferenceUnionErr err)
-            end
-        val fs = List.map (fn (patl, id, patr, typ, exp) =>
-                              let val typ = case typ of SOME typ => makeInfTyp typ
-                                                      | NONE => InfTypNever
-                                  val patl = inferPat (patl, ctx)
-                                  val patr = inferPat (patr, ctx)
-                                  val patidstys = List.concat (List.map getPatIdsTyps [patl, patr])
-                                  val pattys = List.map getPatTyp [patl, patr]
-                                  val fsigr = makeFun (fty::pattys)
-                                  val env = patidstys @ (id, fsigr)::env
-                                  val exp = inferExp (exp, {env=env, aliases=aliases})
-                              in (case Result.seq (if fid = id
-                                                   then Ok ()
-                                                   else Err ("Function names should match in guards", fsig, fsigr, ctx))
-                                                  (List.map (fn (tl, tr) => union tl tr ctx)
-                                                            [(fty, typ), (fty, getExpTyp exp), (fsig, fsigr)]) of
-                                      Ok () => ((patl, id, patr, fty, exp))
-                                    | Err err => raise InferenceUnionErr err)
-                              end) fs
-    in
-        (TyDeclFunInfixOne (f::fs), (fid, fsig))
     end
   | inferFunDecl (P.DeclFunInfixMany ((patl, id, patr, pats, typ, exp)::fs), ctx as {env, aliases}) =
     let val fty = InfTypUnbound (gensym (), ref NONE)

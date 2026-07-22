@@ -183,10 +183,11 @@ and elaborateDecl (P.DeclSeq [decl], ctx) = elaborateDecl (decl, ctx)
                                       (_, id, _, _, _)::_ =>
                                       (case checkInfix id ctx of
                                            SOME (_, SOME _) =>
-                                           P.DeclFunInfixOne (List.map (fn (pl, id, pr, typ, exp) =>
+                                           P.DeclFunInfixMany (List.map (fn (pl, id, pr, typ, exp) =>
                                                                            (elaboratePat (pl, ctx),
                                                                             id,
                                                                             elaboratePat (pr, ctx),
+                                                                            [],
                                                                             typ,
                                                                             elaborateExp (exp, ctx))) matches)
                                          | _ =>

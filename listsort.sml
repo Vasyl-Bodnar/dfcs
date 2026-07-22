@@ -6,20 +6,47 @@ signature LIST_SORT = sig
 end
 
 structure ListSort :> LIST_SORT = struct
-fun splitAt' [] _ acc = (acc, [])
-  | splitAt' xs 0 acc = (acc, xs)
-  | splitAt' (x::xs) n acc = splitAt' xs (n-1) (x::acc)
-
-fun splitAt xs n = splitAt' xs n []
-
 fun merge _ (xs, []) = xs
   | merge _ ([], xs) = xs
   | merge ge (x::xs, y::ys) = if ge (y, x)
                               then x :: (merge ge (xs, y::ys))
                               else y :: (merge ge (x::xs, ys))
 
+fun combiner [] = []
+  | combiner [x] = [(x, [])]
+  | combiner (x::y::xs) = (x,y)::(combiner xs)
+
+fun merger _ [] = []
+  | merger _ [(x, [])] = x
+  | merger ge xs = merger ge (combiner (List.map (merge ge) xs))
+
+fun extractAsc ge [] = ([], [])
+  | extractAsc ge [x] = ([x], [])
+  | extractAsc ge (x::y::xs) =
+    if ge (y, x) then
+        let val (run, rest) = extractAsc ge (y::xs)
+        in (x :: run, rest)
+        end
+    else ([], x::y::xs)
+
+fun extractDes ge [] acc = acc
+  | extractDes ge [x] (acc, rest) = (x::acc, rest)
+  | extractDes ge (x::y::xs) (acc, rest) =
+    if ge (y, x) then (acc, x::y::xs)
+    else extractDes ge (y::xs) (x::acc, rest)
+
+fun natural ge [] = []
+  | natural ge [x] = [[x]]
+  | natural ge (x::y::xs) = if ge (y, x) then
+                                let val (run, rest) = extractAsc ge (y::xs)
+                                in (x::run)::(natural ge rest)
+                                end
+                            else
+                                let val (run, rest) = extractDes ge (x::y::xs) ([], [])
+                                in run::(natural ge rest)
+                                end
+
 fun sort _ [] = []
   | sort _ [x] = [x]
-  | sort ge xs = merge ge ((fn (xs, ys) => (sort ge xs, sort ge ys))
-                               (splitAt xs ((List.length xs) div 2)))
+  | sort ge xs = merger ge (combiner (natural ge xs))
 end
